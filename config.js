@@ -17,9 +17,13 @@ const CONFIG = {
     // Face count roughly doubled vs. earlier tiers — the face is now a
     // displacement-mapped relief (brow/eyes/nose/cheeks/chin), which needs
     // real density to read clearly rather than a flat bright patch did.
-    ULTRA: { head: 32000, face: 22000, neck: 6000, shoulder: 40000, ambient: 900 },
-    HIGH: { head: 19000, face: 13000, neck: 3600, shoulder: 23000, ambient: 600 },
-    MEDIUM: { head: 9500, face: 6500, neck: 1800, shoulder: 11500, ambient: 350 },
+    // aura/far/fog/fg are the four environment layers (see ENVIRONMENT
+    // below and buildFarField/buildFogBandField/buildAuraField/
+    // buildForegroundField in humanoidField.js) — the scene is no longer
+    // "humanoid + one ambient dust cloud".
+    ULTRA: { head: 32000, face: 22000, neck: 6000, shoulder: 40000, aura: 1500, far: 3600, fog: 2800, foreground: 260 },
+    HIGH: { head: 19000, face: 13000, neck: 3600, shoulder: 23000, aura: 950, far: 2200, fog: 1700, foreground: 155 },
+    MEDIUM: { head: 9500, face: 6500, neck: 1800, shoulder: 11500, aura: 560, far: 1150, fog: 900, foreground: 85 },
   },
   QUALITY_ORDER: ['ULTRA', 'HIGH', 'MEDIUM'],
   // Sustained-FPS check: sample window, threshold, and cooldown between
@@ -40,7 +44,9 @@ const CONFIG = {
   // ---- Camera -----------------------------------------------------------
   CAMERA: {
     fovDeg: 34,
-    distance: 5.0,
+    // Pulled in from 5.0 for stronger screen occupancy — the bust should
+    // fill a strong portion of the viewport, not float small in it.
+    distance: 4.55,
     lookY: -0.15,
     near: 0.1,
     far: 60,
@@ -100,10 +106,58 @@ const CONFIG = {
     noiseFlowScale: 1.6,
   },
 
-  AMBIENT: {
-    radius: 2.6,
-    spread: 1.8,
-    velocityInfluence: 0.3,
+  // ---- Environment: four cooperating particle layers ---------------------
+  // (see humanoidField.js buildFarField/buildFogBandField/buildAuraField/
+  // buildForegroundField, and particleSystem.js's single generic
+  // ENV_VERT/ENV_FRAG shader that all four are rendered with, parameterized
+  // per layer). Depth values are WORLD-space z; depthFadeNear/Far below are
+  // VIEW-space z (camera-relative, always negative) — always pass Far more
+  // negative than Near so smoothstep(Far, Near, viewZ) reads as "closer
+  // within this layer's own range = brighter, farther = dimmer".
+  ENVIRONMENT: {
+    // Distant field: fills the whole viewport at depth so the scene never
+    // goes to flat black once the humanoid's own silhouette ends.
+    // sizeConstant looks small on paper but isn't: gl_PointSize = aSize *
+    // pixelRatio * sizeConstant / distanceFromCamera, and these layers
+    // sit 8-20+ units out — at that range 1/distance alone is ~0.05-0.14,
+    // so a "normal" constant (like the humanoid's own ~10.5) renders as a
+    // near-invisible 2-3px speck. These need to be large, soft, bokeh-like
+    // discs (matching the reference pack's fullscreen composition, not a
+    // sharp pinprick starfield) to read as atmosphere at all.
+    far: {
+      halfWidth: 11, halfHeight: 6.5, yBias: 0.4, depthNear: -8, depthFar: -19,
+      color: [0.14, 0.42, 0.58], sizeConstant: 55, alphaBase: 0.1, alphaRandomScale: 0.16,
+      depthFadeFar: -24, depthFadeNear: -10, driftAmount: 0.05, driftSpeedScale: 0.45,
+    },
+    // Horizon-like undulating band (reference: blue particle fog / wave
+    // field), denser near its own crest line, thinning into rising dust
+    // above it. See buildFogBandField's layered-sine undulation. Pushed
+    // clearly below the shoulder line — at the earlier baseY it mostly
+    // sat behind/inside the shoulder silhouette and never read as its own
+    // distinct floor-level haze.
+    fog: {
+      halfWidth: 8.5, baseY: -2.6, waveAmplitude: 0.34, thickness: 0.44, riseHeight: 2.6,
+      depthNear: -3.2, depthFar: -9,
+      color: [0.24, 0.64, 0.86], sizeConstant: 85, alphaBase: 0.1, alphaRandomScale: 0.2,
+      depthFadeFar: -14, depthFadeNear: -6, driftAmount: 0.09, driftSpeedScale: 0.75,
+    },
+    // Halo immediately around the bust — blends its silhouette edge into
+    // the surrounding atmosphere instead of a hard cutoff into black.
+    aura: {
+      radius: 1.95, spread: 1.25, yBias: 0.12, depthBias: -1.75,
+      color: [0.3, 0.78, 0.97], sizeConstant: 60, alphaBase: 0.1, alphaRandomScale: 0.19,
+      depthFadeFar: -9, depthFadeNear: -5.5, driftAmount: 0.065, driftSpeedScale: 1.0,
+    },
+    // Sparse, soft, close-to-camera particles for occasional foreground
+    // parallax. Kept far enough from the camera (depthFar well short of
+    // CAMERA.distance) and modestly sized — an earlier ambient-dust layer
+    // in this project once got this wrong and blew out into oversized
+    // near-camera points; kept deliberately conservative here.
+    foreground: {
+      halfWidth: 2.6, halfHeight: 1.5, yBias: -0.1, depthNear: 1.2, depthFar: 3.6,
+      color: [0.55, 0.85, 0.97], sizeConstant: 11, alphaBase: 0.028, alphaRandomScale: 0.06,
+      depthFadeFar: -4.2, depthFadeNear: -1.0, driftAmount: 0.045, driftSpeedScale: 0.6,
+    },
   },
 
   // ---- Point rendering --------------------------------------------------

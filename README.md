@@ -82,18 +82,37 @@ recent cursor motion (stronger toward the head, softer toward the
 shoulders), and a face-specific shift that lets the face "notice" the
 pointer a beat before the rest of the head turns.
 
+### Environment: four cooperating particle layers
+
+The humanoid doesn't float in flat black. `humanoidField.js`'s
+`buildFarField`/`buildFogBandField`/`buildAuraField`/`buildForegroundField`
+build four additional particle populations, all rendered through one
+generic shader (`ENV_VERT`/`ENV_FRAG` in `particleSystem.js`) parameterized
+per layer via `CONFIG.ENVIRONMENT`:
+
+| Layer | Role |
+| --- | --- |
+| **far** | A broad, dim, distant population filling the whole viewport at depth, so the scene doesn't go to flat black once the humanoid's own silhouette ends. |
+| **fog** | A horizon-like undulating band (layered sine terms, not a grid) low in frame, denser near its own crest line and thinning into rising dust above it. |
+| **aura** | A halo immediately around the bust, blending its silhouette edge into the surrounding atmosphere instead of a hard cutoff into black. |
+| **foreground** | Sparse, soft, close-to-camera particles for occasional depth parallax in front of the figure. Deliberately conservative in size/count — an earlier ambient-dust layer in this project once got this wrong and blew out into oversized near-camera points. |
+
+Each layer's point size needs to be large — `gl_PointSize` scales with
+`1 / distanceFromCamera`, and these layers sit far enough out that a
+"normal" size constant renders as a near-invisible speck; they're tuned as
+large, soft, bokeh-like discs rather than a sharp pinprick starfield.
+
 ### Particle counts per quality tier
 
 Adaptive quality is **one-way** (downgrade only, never upgrades back) and
-rebuilds the humanoid/ambient buffers in place — no shader recompilation —
-after several consecutive seconds of sustained low FPS, with a cooldown
-between steps.
+rebuilds every buffer in place — no shader recompilation — after several
+consecutive seconds of sustained low FPS, with a cooldown between steps.
 
-| Tier | Head | Face | Neck | Shoulders | Ambient | Total |
-| --- | --- | --- | --- | --- | --- | --- |
-| ULTRA | 34,000 | 11,000 | 5,000 | 38,000 | 900 | 88,900 |
-| HIGH | 20,000 | 6,500 | 3,000 | 22,000 | 600 | 52,100 |
-| MEDIUM | 10,000 | 3,200 | 1,600 | 11,000 | 350 | 26,150 |
+| Tier | Head | Face | Neck | Shoulders | Aura | Far | Fog | Foreground | Total |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| ULTRA | 32,000 | 22,000 | 6,000 | 40,000 | 1,500 | 3,600 | 2,800 | 260 | 108,160 |
+| HIGH | 19,000 | 13,000 | 3,600 | 23,000 | 950 | 2,200 | 1,700 | 155 | 63,605 |
+| MEDIUM | 9,500 | 6,500 | 1,800 | 11,500 | 560 | 1,150 | 900 | 85 | 31,995 |
 
 ### Audio mapping
 

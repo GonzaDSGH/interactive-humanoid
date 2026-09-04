@@ -166,8 +166,8 @@ function checkAdaptiveQuality(nowMs) {
 // ---- Debug overlay (?debug=1 only) -----------------------------------------
 function updateDebugPanel(pose) {
   if (!debugMode || !debugEl) return;
-  const totalParticles =
-    (particleSystem.humanoidCount || 0) + (particleSystem.ambientCount || 0);
+  const envTotal = Object.values(particleSystem.envCounts || {}).reduce((sum, n) => sum + n, 0);
+  const totalParticles = (particleSystem.humanoidCount || 0) + envTotal;
   debugEl.textContent = [
     `fps         ${frameRate().toFixed(0)}`,
     `quality     ${CONFIG.QUALITY_ORDER[qualityIndex]}`,

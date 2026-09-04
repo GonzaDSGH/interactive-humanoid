@@ -586,34 +586,118 @@ function buildHumanoidField(counts) {
   return buf;
 }
 
-/** Sparse ambient environment dust — independent of the humanoid rig,
- *  static positions (drift happens on the GPU), restrained brightness. */
-function buildAmbientField(count) {
-  const positions = new Float32Array(count * 3);
-  const sizes = new Float32Array(count);
-  const randoms = new Float32Array(count);
-  const seeds = new Float32Array(count * 3);
-  const A = CONFIG.AMBIENT;
+function allocateEnv(count) {
+  return {
+    positions: new Float32Array(count * 3),
+    sizes: new Float32Array(count),
+    randoms: new Float32Array(count),
+    seeds: new Float32Array(count * 3),
+    count,
+  };
+}
 
+function writeEnvParticle(buf, i, x, y, z, size) {
+  buf.positions[i * 3] = x;
+  buf.positions[i * 3 + 1] = y;
+  buf.positions[i * 3 + 2] = z;
+  buf.sizes[i] = size;
+  buf.randoms[i] = Math.random();
+  buf.seeds[i * 3] = Math.random();
+  buf.seeds[i * 3 + 1] = Math.random();
+  buf.seeds[i * 3 + 2] = Math.random();
+}
+
+/**
+ * The environment is four cooperating particle layers (all rendered with
+ * the same generic shader in particleSystem.js, parameterized per layer —
+ * see ENV_VERT/ENV_FRAG) rather than a single ambient dust cloud:
+ *
+ *  - far field: a broad, dim, distant population that fills the whole
+ *    viewport at depth — the scene no longer goes to flat black once the
+ *    humanoid's own silhouette ends.
+ *  - fog band: a horizon-like undulating layer low in frame (the
+ *    reference pack's blue-fog / wave-field mood), denser near its own
+ *    "crest" line, thinning into rising dust above it — built from
+ *    layered sine terms for the undulation, not a visible grid.
+ *  - aura: a halo immediately around the bust that blends its edges into
+ *    the surrounding atmosphere instead of a hard cutoff into black.
+ *  - foreground: sparse, large, very soft particles between the camera
+ *    and the figure — occasional depth parallax in front of the subject.
+ */
+function buildFarField(count) {
+  const E = CONFIG.ENVIRONMENT.far;
+  const buf = allocateEnv(count);
+  for (let i = 0; i < count; i++) {
+    const x = (Math.random() * 2 - 1) * E.halfWidth;
+    const y = (Math.random() * 2 - 1) * E.halfHeight + E.yBias;
+    const z = lerp(E.depthNear, E.depthFar, Math.pow(Math.random(), 0.7));
+    writeEnvParticle(buf, i, x, y, z, lerp(0.3, 0.95, Math.random()));
+  }
+  return buf;
+}
+
+function buildFogBandField(count) {
+  const E = CONFIG.ENVIRONMENT.fog;
+  const buf = allocateEnv(count);
+  const riserCount = Math.floor(count * 0.22);
+  const bandCount = count - riserCount;
+
+  for (let i = 0; i < count; i++) {
+    const xNorm = Math.random() * 2 - 1;
+    const x = xNorm * E.halfWidth;
+    // Layered sine terms stand in for coherent noise here (deterministic,
+    // no dependency needed) — a soft horizon undulation, not a hard wave.
+    const wave =
+      Math.sin(xNorm * 3.1 + 0.7) * 0.5 +
+      Math.sin(xNorm * 7.3 + 2.1) * 0.28 +
+      Math.sin(xNorm * 13.7 + 4.4) * 0.14;
+    const crestY = E.baseY + wave * E.waveAmplitude;
+
+    let y, size;
+    if (i < bandCount) {
+      // Dense near the undulating crest line itself, biased toward it
+      // rather than uniformly filling the band's full thickness.
+      const t = Math.pow(Math.random(), 1.8) * (Math.random() < 0.5 ? -1 : 1);
+      y = crestY + t * E.thickness;
+      size = lerp(0.55, 1.35, Math.random());
+    } else {
+      // Sparse dust rising off the band into the dark space above it.
+      const rise = Math.pow(Math.random(), 1.7) * E.riseHeight;
+      y = crestY + E.thickness * 0.4 + rise;
+      size = lerp(0.3, 0.75, Math.random());
+    }
+
+    const z = lerp(E.depthNear, E.depthFar, Math.random());
+    writeEnvParticle(buf, i, x, y, z, size);
+  }
+  return buf;
+}
+
+function buildAuraField(count) {
+  const E = CONFIG.ENVIRONMENT.aura;
+  const buf = allocateEnv(count);
   for (let i = 0; i < count; i++) {
     const theta = Math.random() * Math.PI * 2;
     const phi = Math.acos(lerp(-0.3, 1, Math.random()));
-    const r = A.radius * (0.55 + Math.pow(Math.random(), 1.6) * 0.45);
+    const r = E.radius * (0.55 + Math.pow(Math.random(), 1.6) * 0.45);
 
-    // Kept entirely behind the humanoid (negative z, always farther from
-    // the camera than the figure) so it never blows up into oversized
-    // near-camera points — this is restrained atmospheric haze, not a
-    // second mass competing with the humanoid silhouette.
-    positions[i * 3] = Math.sin(phi) * Math.cos(theta) * r + (Math.random() - 0.5) * A.spread;
-    positions[i * 3 + 1] = Math.cos(phi) * r * 0.6 + 0.3;
-    positions[i * 3 + 2] = -2.2 - Math.abs(Math.sin(phi) * Math.sin(theta)) * r * 0.6;
+    const x = Math.sin(phi) * Math.cos(theta) * r + (Math.random() - 0.5) * E.spread;
+    const y = Math.cos(phi) * r * 0.62 + E.yBias;
+    const z = E.depthBias - Math.abs(Math.sin(phi) * Math.sin(theta)) * r * 0.6;
 
-    sizes[i] = lerp(0.4, 1.0, Math.random());
-    randoms[i] = Math.random();
-    seeds[i * 3] = Math.random();
-    seeds[i * 3 + 1] = Math.random();
-    seeds[i * 3 + 2] = Math.random();
+    writeEnvParticle(buf, i, x, y, z, lerp(0.4, 1.05, Math.random()));
   }
+  return buf;
+}
 
-  return { positions, sizes, randoms, seeds, count };
+function buildForegroundField(count) {
+  const E = CONFIG.ENVIRONMENT.foreground;
+  const buf = allocateEnv(count);
+  for (let i = 0; i < count; i++) {
+    const x = (Math.random() * 2 - 1) * E.halfWidth;
+    const y = (Math.random() * 2 - 1) * E.halfHeight + E.yBias;
+    const z = lerp(E.depthNear, E.depthFar, Math.random());
+    writeEnvParticle(buf, i, x, y, z, lerp(0.6, 1.4, Math.random()));
+  }
+  return buf;
 }

@@ -178,7 +178,13 @@ const HUMANOID_FRAG = `
   }
 `;
 
-const AMBIENT_VERT = `
+// ---- Environment layers: one generic shader, four parameterizations -----
+// far field / fog band / aura / foreground (see humanoidField.js's
+// buildFarField/buildFogBandField/buildAuraField/buildForegroundField and
+// CONFIG.ENVIRONMENT) all share this program — only the per-layer uniforms
+// (color, size, alpha, depth-fade range, drift amount/speed) differ, set
+// fresh before each of the four draw calls in ParticleSystem.draw().
+const ENV_VERT = `
   attribute vec3 aPosition;
   attribute float aSize;
   attribute float aRandom;
@@ -189,27 +195,35 @@ const AMBIENT_VERT = `
   uniform float uTime;
   uniform vec2 uFlowVelocity;
   uniform float uPixelRatio;
+  uniform float uSizeConstant;
+  uniform float uAlphaBase;
+  uniform float uAlphaRandomScale;
+  uniform float uDepthFadeFar;
+  uniform float uDepthFadeNear;
+  uniform float uDriftAmount;
+  uniform float uDriftSpeedScale;
 
   varying float vAlpha;
 
   void main() {
     vec3 pos = aPosition;
-    pos.x += sin(uTime * (0.1 + aRandom * 0.15) + aSeed.x * 6.283) * 0.06;
-    pos.y += cos(uTime * (0.08 + aRandom * 0.12) + aSeed.y * 6.283) * 0.05;
-    pos.xy += uFlowVelocity * (0.2 + aRandom * 0.4);
+    float t = uTime * uDriftSpeedScale;
+    pos.x += sin(t * (0.1 + aRandom * 0.15) + aSeed.x * 6.283) * uDriftAmount;
+    pos.y += cos(t * (0.08 + aRandom * 0.12) + aSeed.y * 6.283) * uDriftAmount * 0.85;
+    pos.xy += uFlowVelocity * (0.15 + aRandom * 0.3);
 
     vec4 viewPos = uViewMatrix * vec4(pos, 1.0);
     gl_Position = uProjectionMatrix * viewPos;
 
     float sizeAtten = 1.0 / max(-viewPos.z, 0.001);
-    gl_PointSize = aSize * uPixelRatio * sizeAtten * 13.0;
+    gl_PointSize = aSize * uPixelRatio * sizeAtten * uSizeConstant;
 
-    float depthFade = smoothstep(-16.0, -2.0, viewPos.z);
-    vAlpha = (0.08 + aRandom * 0.18) * depthFade;
+    float depthFade = smoothstep(uDepthFadeFar, uDepthFadeNear, viewPos.z);
+    vAlpha = (uAlphaBase + aRandom * uAlphaRandomScale) * depthFade;
   }
 `;
 
-const AMBIENT_FRAG = `
+const ENV_FRAG = `
   precision highp float;
   varying float vAlpha;
   uniform vec3 uColor;
@@ -217,7 +231,7 @@ const AMBIENT_FRAG = `
     vec2 c = gl_PointCoord - 0.5;
     float d = length(c);
     float alpha = smoothstep(0.5, 0.0, d) * vAlpha;
-    if (alpha < 0.008) discard;
+    if (alpha < 0.006) discard;
     gl_FragColor = vec4(uColor, alpha);
   }
 `;
@@ -332,6 +346,16 @@ class Pivots {
   }
 }
 
+// The four environment layers share one buffer shape ({position, size,
+// random, seed}) and one draw call recipe — only the source buffers, the
+// particle count and CONFIG.ENVIRONMENT's per-layer params differ.
+const ENV_LAYERS = [
+  { key: 'far', builder: buildFarField },
+  { key: 'fog', builder: buildFogBandField },
+  { key: 'aura', builder: buildAuraField },
+  { key: 'foreground', builder: buildForegroundField },
+];
+
 class ParticleSystem {
   constructor(p, counts) {
     this.p = p;
@@ -339,7 +363,7 @@ class ParticleSystem {
     this.pivots = new Pivots();
 
     this.humanoidProgram = createProgram(this.gl, HUMANOID_VERT, HUMANOID_FRAG);
-    this.ambientProgram = createProgram(this.gl, AMBIENT_VERT, AMBIENT_FRAG);
+    this.envProgram = createProgram(this.gl, ENV_VERT, ENV_FRAG);
 
     this.clock = 0;
     this.idleSeed = Math.random() * 1000;
@@ -367,14 +391,18 @@ class ParticleSystem {
       edge: makeAttribBuffer(gl, field.edge),
     };
 
-    const ambient = buildAmbientField(counts.ambient);
-    this.ambientCount = ambient.count;
-    this.ambientBuffers = {
-      position: makeAttribBuffer(gl, ambient.positions),
-      size: makeAttribBuffer(gl, ambient.sizes),
-      random: makeAttribBuffer(gl, ambient.randoms),
-      seed: makeAttribBuffer(gl, ambient.seeds),
-    };
+    this.envBuffers = {};
+    this.envCounts = {};
+    for (const layer of ENV_LAYERS) {
+      const data = layer.builder(counts[layer.key]);
+      this.envCounts[layer.key] = data.count;
+      this.envBuffers[layer.key] = {
+        position: makeAttribBuffer(gl, data.positions),
+        size: makeAttribBuffer(gl, data.sizes),
+        random: makeAttribBuffer(gl, data.randoms),
+        seed: makeAttribBuffer(gl, data.seeds),
+      };
+    }
   }
 
   /** Rebuilds particle buffers at a different quality preset (adaptive
@@ -382,7 +410,9 @@ class ParticleSystem {
   rebuild(counts) {
     const gl = this.gl;
     for (const buf of Object.values(this.humanoidBuffers)) gl.deleteBuffer(buf);
-    for (const buf of Object.values(this.ambientBuffers)) gl.deleteBuffer(buf);
+    for (const layer of ENV_LAYERS) {
+      for (const buf of Object.values(this.envBuffers[layer.key])) gl.deleteBuffer(buf);
+    }
     this.buildBuffers(counts);
   }
 
@@ -422,27 +452,48 @@ class ParticleSystem {
     gl.uniform1f(u('uPixelRatio'), Math.min(window.devicePixelRatio || 1, CONFIG.MAX_PIXEL_RATIO));
   }
 
+  /** Draws one environment layer (far / fog / aura / foreground) — same
+   *  program and buffer shape throughout, only CONFIG.ENVIRONMENT[key]'s
+   *  uniforms and the flow-velocity sensitivity differ. */
+  _drawEnvLayer(key, flowScale) {
+    const gl = this.gl;
+    const E = CONFIG.ENVIRONMENT[key];
+    const buffers = this.envBuffers[key];
+    const program = this.envProgram;
+    const u = (name) => gl.getUniformLocation(program, name);
+
+    gl.uniform3fv(u('uColor'), E.color);
+    gl.uniform1f(u('uSizeConstant'), E.sizeConstant);
+    gl.uniform1f(u('uAlphaBase'), E.alphaBase);
+    gl.uniform1f(u('uAlphaRandomScale'), E.alphaRandomScale);
+    gl.uniform1f(u('uDepthFadeFar'), E.depthFadeFar);
+    gl.uniform1f(u('uDepthFadeNear'), E.depthFadeNear);
+    gl.uniform1f(u('uDriftAmount'), E.driftAmount);
+    gl.uniform1f(u('uDriftSpeedScale'), E.driftSpeedScale);
+    gl.uniform2f(u('uFlowVelocity'), this.flowVelX * flowScale, this.flowVelY * flowScale);
+
+    bindAttrib(gl, program, 'aPosition', buffers.position, 3);
+    bindAttrib(gl, program, 'aSize', buffers.size, 1);
+    bindAttrib(gl, program, 'aRandom', buffers.random, 1);
+    bindAttrib(gl, program, 'aSeed', buffers.seed, 3);
+    gl.drawArrays(gl.POINTS, 0, this.envCounts[key]);
+  }
+
   draw(pose, audio) {
     const gl = this.gl;
     gl.enable(gl.BLEND);
     gl.blendFunc(gl.SRC_ALPHA, gl.ONE);
     gl.disable(gl.DEPTH_TEST);
 
-    // ---- Ambient dust (drawn first, behind) --------------------------
+    // ---- Environment: back-to-front (far -> fog -> aura), all behind or
+    // blending into the humanoid; foreground is drawn last, after the
+    // humanoid, for particles that read as being in front of the figure.
     resetAttribs(gl);
-    gl.useProgram(this.ambientProgram);
-    this._setCommonUniforms(gl, this.ambientProgram, audio);
-    gl.uniform3fv(gl.getUniformLocation(this.ambientProgram, 'uColor'), [0.62, 0.83, 0.92]);
-    gl.uniform2f(
-      gl.getUniformLocation(this.ambientProgram, 'uFlowVelocity'),
-      this.flowVelX * 0.05,
-      this.flowVelY * 0.05
-    );
-    bindAttrib(gl, this.ambientProgram, 'aPosition', this.ambientBuffers.position, 3);
-    bindAttrib(gl, this.ambientProgram, 'aSize', this.ambientBuffers.size, 1);
-    bindAttrib(gl, this.ambientProgram, 'aRandom', this.ambientBuffers.random, 1);
-    bindAttrib(gl, this.ambientProgram, 'aSeed', this.ambientBuffers.seed, 3);
-    gl.drawArrays(gl.POINTS, 0, this.ambientCount);
+    gl.useProgram(this.envProgram);
+    this._setCommonUniforms(gl, this.envProgram, audio);
+    this._drawEnvLayer('far', 0.012);
+    this._drawEnvLayer('fog', 0.03);
+    this._drawEnvLayer('aura', 0.06);
 
     // ---- Humanoid field ------------------------------------------------
     resetAttribs(gl);
@@ -492,13 +543,22 @@ class ParticleSystem {
     bindAttrib(gl, hp, 'aEdge', this.humanoidBuffers.edge, 1);
 
     gl.drawArrays(gl.POINTS, 0, this.humanoidCount);
+
+    // ---- Foreground: sparse, soft, close-to-camera parallax dust drawn
+    // last so it reads as being in front of the figure. -------------------
+    resetAttribs(gl);
+    gl.useProgram(this.envProgram);
+    this._setCommonUniforms(gl, this.envProgram, audio);
+    this._drawEnvLayer('foreground', 0.09);
   }
 
   dispose() {
     const gl = this.gl;
     for (const buf of Object.values(this.humanoidBuffers)) gl.deleteBuffer(buf);
-    for (const buf of Object.values(this.ambientBuffers)) gl.deleteBuffer(buf);
+    for (const layer of ENV_LAYERS) {
+      for (const buf of Object.values(this.envBuffers[layer.key])) gl.deleteBuffer(buf);
+    }
     gl.deleteProgram(this.humanoidProgram);
-    gl.deleteProgram(this.ambientProgram);
+    gl.deleteProgram(this.envProgram);
   }
 }
