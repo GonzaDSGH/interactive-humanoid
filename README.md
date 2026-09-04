@@ -82,6 +82,43 @@ recent cursor motion (stronger toward the head, softer toward the
 shoulders), and a face-specific shift that lets the face "notice" the
 pointer a beat before the rest of the head turns.
 
+### Rendering pipeline: layered particles + real bloom
+
+The humanoid is not one uniform point cloud. Every particle is tagged at
+generation time (`humanoidField.js` `writeParticle`) into one of three
+populations, each with its own size/brightness/softness treatment
+(`CONFIG.PARTICLE_LAYERS`):
+
+| Layer | Role |
+| --- | --- |
+| **structural** | The bulk — small, sharp, precise. Carries the actual anatomical definition. |
+| **luminous** | A minority subset drawn from strong-landmark particles (high `\|featureBoost\|` — brow, nose, cheek, jaw, chin, clavicle), rendered larger/brighter for a sparkling accent concentrated at those landmarks, not the whole figure. |
+| **peripheral** | The existing halo/edge particles, rendered larger and much softer so the silhouette itself reads as glowing energy rather than a hard cutoff. |
+
+Every particle — humanoid or environment — is shaded by the same
+`particleProfile()` function (`PARTICLE_CORE_GLSL` in `particleSystem.js`):
+a per-particle blend between a tight bright core and a wide soft Gaussian
+glow (its `softness`), with an explicit circular cutoff so the point
+sprite's square bounding box never shows.
+
+The scene then renders into an offscreen framebuffer and goes through a
+real multi-pass bloom before reaching the canvas: bright-pass (luminance
+threshold + soft knee) → two independent blur scales (a tight, sharp glow
+and a broad, soft halo — separate downsample + horizontal/vertical Gaussian
+blur passes, `CONFIG.BLOOM`) → composite with a Reinhard-style tonemap. If
+framebuffer creation fails on an unusual GL implementation, it falls back
+to rendering directly to the canvas rather than crashing.
+
+Tuning this taught a real lesson worth recording: the first pass had
+`structural` particles bright enough, combined with dense importance-
+sampled overlap at landmarks (the nose ridge especially), to already
+saturate to white *before* bloom was even applied — bloom then piled a
+glow on top of an already-blown-out patch, engulfing the exact facial
+detail the layering was supposed to make more readable. Fixed by pulling
+back structural brightness/size, softening the core falloff so dense
+overlap saturates less aggressively, and raising the bloom threshold so it
+catches genuine luminous-layer accents rather than general dense overlap.
+
 ### Environment: four cooperating particle layers
 
 The humanoid doesn't float in flat black. `humanoidField.js`'s
@@ -107,12 +144,16 @@ large, soft, bokeh-like discs rather than a sharp pinprick starfield.
 Adaptive quality is **one-way** (downgrade only, never upgrades back) and
 rebuilds every buffer in place — no shader recompilation — after several
 consecutive seconds of sustained low FPS, with a cooldown between steps.
+Counts were trimmed from an earlier pass on purpose: rendering quality now
+comes from the layered particle shader and bloom pipeline above, not from
+raw density — a smaller, better-rendered population reads richer than a
+larger flat one.
 
 | Tier | Head | Face | Neck | Shoulders | Aura | Far | Fog | Foreground | Total |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
-| ULTRA | 32,000 | 22,000 | 6,000 | 40,000 | 1,500 | 3,600 | 2,800 | 260 | 108,160 |
-| HIGH | 19,000 | 13,000 | 3,600 | 23,000 | 950 | 2,200 | 1,700 | 155 | 63,605 |
-| MEDIUM | 9,500 | 6,500 | 1,800 | 11,500 | 560 | 1,150 | 900 | 85 | 31,995 |
+| ULTRA | 27,000 | 19,000 | 5,000 | 34,000 | 1,300 | 3,000 | 2,400 | 220 | 91,920 |
+| HIGH | 16,000 | 11,500 | 3,000 | 20,000 | 820 | 1,850 | 1,450 | 130 | 54,750 |
+| MEDIUM | 8,000 | 5,800 | 1,500 | 10,000 | 480 | 950 | 750 | 70 | 27,550 |
 
 ### Audio mapping
 

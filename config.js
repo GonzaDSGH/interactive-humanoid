@@ -21,9 +21,14 @@ const CONFIG = {
     // below and buildFarField/buildFogBandField/buildAuraField/
     // buildForegroundField in humanoidField.js) — the scene is no longer
     // "humanoid + one ambient dust cloud".
-    ULTRA: { head: 32000, face: 22000, neck: 6000, shoulder: 40000, aura: 1500, far: 3600, fog: 2800, foreground: 260 },
-    HIGH: { head: 19000, face: 13000, neck: 3600, shoulder: 23000, aura: 950, far: 2200, fog: 1700, foreground: 155 },
-    MEDIUM: { head: 9500, face: 6500, neck: 1800, shoulder: 11500, aura: 560, far: 1150, fog: 900, foreground: 85 },
+    // Trimmed from the previous pass's counts on purpose: rendering
+    // quality now comes from the layered particle shader + bloom
+    // pipeline (see PARTICLE_LAYERS/BLOOM below and particleSystem.js),
+    // not from raw density — a smaller, better-rendered population reads
+    // richer than a larger flat one.
+    ULTRA: { head: 27000, face: 19000, neck: 5000, shoulder: 34000, aura: 1300, far: 3000, fog: 2400, foreground: 220 },
+    HIGH: { head: 16000, face: 11500, neck: 3000, shoulder: 20000, aura: 820, far: 1850, fog: 1450, foreground: 130 },
+    MEDIUM: { head: 8000, face: 5800, neck: 1500, shoulder: 10000, aura: 480, far: 950, fog: 750, foreground: 70 },
   },
   QUALITY_ORDER: ['ULTRA', 'HIGH', 'MEDIUM'],
   // Sustained-FPS check: sample window, threshold, and cooldown between
@@ -127,7 +132,7 @@ const CONFIG = {
     far: {
       halfWidth: 11, halfHeight: 6.5, yBias: 0.4, depthNear: -8, depthFar: -19,
       color: [0.14, 0.42, 0.58], sizeConstant: 55, alphaBase: 0.1, alphaRandomScale: 0.16,
-      depthFadeFar: -24, depthFadeNear: -10, driftAmount: 0.05, driftSpeedScale: 0.45,
+      depthFadeFar: -24, depthFadeNear: -10, driftAmount: 0.05, driftSpeedScale: 0.45, softness: 0.82,
     },
     // Horizon-like undulating band (reference: blue particle fog / wave
     // field), denser near its own crest line, thinning into rising dust
@@ -139,14 +144,14 @@ const CONFIG = {
       halfWidth: 8.5, baseY: -2.6, waveAmplitude: 0.34, thickness: 0.44, riseHeight: 2.6,
       depthNear: -3.2, depthFar: -9,
       color: [0.24, 0.64, 0.86], sizeConstant: 85, alphaBase: 0.1, alphaRandomScale: 0.2,
-      depthFadeFar: -14, depthFadeNear: -6, driftAmount: 0.09, driftSpeedScale: 0.75,
+      depthFadeFar: -14, depthFadeNear: -6, driftAmount: 0.09, driftSpeedScale: 0.75, softness: 0.68,
     },
     // Halo immediately around the bust — blends its silhouette edge into
     // the surrounding atmosphere instead of a hard cutoff into black.
     aura: {
       radius: 1.95, spread: 1.25, yBias: 0.12, depthBias: -1.75,
       color: [0.3, 0.78, 0.97], sizeConstant: 60, alphaBase: 0.1, alphaRandomScale: 0.19,
-      depthFadeFar: -9, depthFadeNear: -5.5, driftAmount: 0.065, driftSpeedScale: 1.0,
+      depthFadeFar: -9, depthFadeNear: -5.5, driftAmount: 0.065, driftSpeedScale: 1.0, softness: 0.6,
     },
     // Sparse, soft, close-to-camera particles for occasional foreground
     // parallax. Kept far enough from the camera (depthFar well short of
@@ -156,13 +161,56 @@ const CONFIG = {
     foreground: {
       halfWidth: 2.6, halfHeight: 1.5, yBias: -0.1, depthNear: 1.2, depthFar: 3.6,
       color: [0.55, 0.85, 0.97], sizeConstant: 11, alphaBase: 0.028, alphaRandomScale: 0.06,
-      depthFadeFar: -4.2, depthFadeNear: -1.0, driftAmount: 0.045, driftSpeedScale: 0.6,
+      depthFadeFar: -4.2, depthFadeNear: -1.0, driftAmount: 0.045, driftSpeedScale: 0.6, softness: 0.9,
     },
   },
 
   // ---- Point rendering --------------------------------------------------
   POINT_SIZE_CONSTANT: 10.5,
   MAX_PIXEL_RATIO: 1.75,
+
+  // ---- Humanoid particle hierarchy ---------------------------------------
+  // Every humanoid particle is tagged structural/luminous/peripheral at
+  // generation time (see humanoidField.js writeParticle's LAYER_* consts).
+  // These per-layer multipliers are what actually makes the three read as
+  // visually distinct populations rather than one uniform point cloud:
+  // sizeMul/brightMul scale the particle's own base size/brightness,
+  // softness blends the fragment shader's tight core profile (0) toward
+  // its wide soft-glow profile (1) — see PARTICLE_CORE_GLSL.
+  // Structural brightness kept deliberately modest: it's the majority
+  // population and densely overlaps at anatomical landmarks (the nose
+  // ridge especially, from importance sampling) — at full brightness that
+  // overlap alone saturates to white before bloom even applies, washing
+  // out the exact facial detail this layer exists to carry. Luminous
+  // stays the clearly-brighter accent layer, but pulled back from its
+  // first pass (1.75) which bloomed into a blown-out patch instead of a
+  // sparkle.
+  PARTICLE_LAYERS: {
+    structural: { sizeMul: 0.85, brightMul: 0.85, softness: 0.08 },
+    luminous: { sizeMul: 1.35, brightMul: 1.4, softness: 0.35 },
+    peripheral: { sizeMul: 2.1, brightMul: 0.5, softness: 0.85 },
+  },
+
+  // ---- Bloom post-process -------------------------------------------------
+  // Real multi-pass bloom over offscreen framebuffers (bright-pass -> blur
+  // -> composite), not "bigger/more transparent particles". Two blur
+  // scales (tight + wide) composited together for a believable multi-
+  // scale glow — a tight hot core plus a broad soft halo, rather than one
+  // uniform blur radius. See particleSystem.js's FBO/quad pipeline.
+  // threshold is intentionally high: it must catch only genuine luminous-
+  // layer accents and dense-cluster hot spots, not the general structural
+  // mass — a low threshold bloomed the whole face into a blown-out patch
+  // (caught during visual QA; see the pipeline's RENDER_before/after
+  // comparison this was verified against).
+  BLOOM: {
+    threshold: 0.78,
+    knee: 0.22,
+    tightStrength: 0.5,
+    wideStrength: 0.3,
+    tightResDivisor: 2,
+    wideResDivisor: 4,
+    tonemapGamma: 0.92,
+  },
 
   // ---- Idle autonomous motion --------------------------------------------
   IDLE: {

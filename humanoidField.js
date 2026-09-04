@@ -396,9 +396,29 @@ function allocate(count) {
     random: new Float32Array(count),
     seed: new Float32Array(count * 3),
     edge: new Float32Array(count),
+    layer: new Float32Array(count),
     count,
   };
 }
+
+// Humanoid particle population — NOT a single homogeneous cloud. Every
+// particle is tagged into one of three visual layers at generation time,
+// from signals already being computed anyway (featureBoost, halo edge):
+//   0 STRUCTURAL — the bulk. Small, sharp, precise: carries the actual
+//     anatomical definition (see particleSystem.js's per-layer size/
+//     softness/brightness multipliers).
+//   1 LUMINOUS   — a minority subset drawn from strong-landmark particles
+//     (high |featureBoost|), rendered larger/brighter/softer-edged for a
+//     sparkling "energy" accent concentrated at brow/nose/cheek/jaw/chin/
+//     clavicle — not the whole figure.
+//   2 PERIPHERAL — the existing halo/edge particles (already sampled with
+//     a soft displaced boundary), rendered larger and much softer so the
+//     silhouette itself reads as glowing energy rather than a hard edge.
+const LAYER_STRUCTURAL = 0;
+const LAYER_LUMINOUS = 1;
+const LAYER_PERIPHERAL = 2;
+const LUMINOUS_FEATURE_THRESHOLD = 0.32;
+const LUMINOUS_PICK_PROBABILITY = 0.4;
 
 /** featureBoost (roughly -1..1) biases size/brightness so anatomical
  *  ridges read brighter and larger, and depressions/rear volume read
@@ -430,6 +450,14 @@ function writeParticle(buf, i, x, y, z, part, isFace, edgeAmount, sizeRange, bri
   buf.seed[i * 3] = Math.random();
   buf.seed[i * 3 + 1] = Math.random();
   buf.seed[i * 3 + 2] = Math.random();
+
+  if (edgeAmount >= 1.0) {
+    buf.layer[i] = LAYER_PERIPHERAL;
+  } else if (Math.abs(fb) >= LUMINOUS_FEATURE_THRESHOLD && Math.random() < LUMINOUS_PICK_PROBABILITY) {
+    buf.layer[i] = LAYER_LUMINOUS;
+  } else {
+    buf.layer[i] = LAYER_STRUCTURAL;
+  }
 }
 
 /**

@@ -1,16 +1,26 @@
 /**
- * GPU particle renderer. Deliberately bypasses p5's high-level drawing API
- * for the particle draw itself: we compile our own shader program and
- * issue a single raw gl.drawArrays(POINTS, ...) call per particle group,
- * using p5 only for the canvas/context/window/event plumbing. This is
- * what makes a hundred-thousand-particle humanoid possible at 60fps — no
- * per-particle JS object, no per-particle vertex()/ellipse() call.
+ * GPU particle renderer — a real rendering pipeline, not raw GL_POINTS with
+ * a circular alpha mask. Three things make this a different rendering
+ * model from a plain point cloud, not just "the same points with more
+ * particles":
  *
- * Rigid body-part motion (shoulder -> neck -> head) is computed once per
- * frame on the CPU as three 4x4 matrices (gl-matrix), mirroring exactly
- * the joint hierarchy the pointer-attention system expects, and skinned
- * to each particle in the vertex shader by a part-id attribute — the same
- * technique as GPU bone/skin animation, with 3 "bones".
+ *  1. Every particle is a Gaussian-profile anti-aliased sprite (tight core
+ *     blended toward a soft wide glow per-particle, see
+ *     PARTICLE_CORE_GLSL) instead of a hard-edged smoothstep disc.
+ *  2. The humanoid is three visually distinct populations — structural /
+ *     luminous / peripheral (see humanoidField.js's LAYER_* tagging) —
+ *     each with its own size/brightness/softness treatment, not one
+ *     uniform cloud.
+ *  3. The whole scene renders into an offscreen framebuffer first, then
+ *     goes through a real multi-pass bloom (bright-pass -> two blur
+ *     scales -> tonemapped composite) before it ever reaches the canvas.
+ *
+ * Still deliberately bypasses p5's high-level drawing API for the actual
+ * particle draw — a single raw gl.drawArrays(POINTS, ...) call per
+ * population, no per-particle JS object or vertex()/ellipse() call — and
+ * rigid body-part motion (shoulder -> neck -> head) is still three 4x4
+ * matrices (gl-matrix) computed once per frame and skinned per-vertex by a
+ * part-id attribute, unchanged from before.
  */
 
 // ---- Shared GLSL noise (Ashima simplex noise, 3D) --------------------------
@@ -66,6 +76,27 @@ const NOISE_GLSL = `
   }
 `;
 
+// ---- Shared particle sprite profile ----------------------------------------
+// Every particle (humanoid or environment) is shaded by this one function:
+// a per-particle blend between a tight, bright, nearly-hard core and a
+// wide, soft Gaussian glow, with an explicit circular cutoff so the point
+// sprite's own square bounding box never shows (no "square dot" artifact).
+// `softness` (0 = sharp core dominant, 1 = wide glow dominant) is what
+// gives structural/luminous/peripheral — and far/fog/aura/foreground —
+// their distinct optical character from the exact same shader.
+const PARTICLE_CORE_GLSL = `
+  float particleProfile(vec2 pointCoord, float softness) {
+    vec2 c = (pointCoord - 0.5) * 2.0;
+    float d = length(c);
+    if (d > 1.0) return 0.0;
+    float core = exp(-d * d * 4.0);
+    float glow = exp(-d * d * 1.3);
+    float profile = mix(core, glow, clamp(softness, 0.0, 1.0));
+    float edgeMask = smoothstep(1.0, 0.8, d);
+    return profile * edgeMask;
+  }
+`;
+
 const HUMANOID_VERT = `
   attribute vec3 aPosition;
   attribute float aPart;
@@ -75,6 +106,7 @@ const HUMANOID_VERT = `
   attribute float aRandom;
   attribute vec3 aSeed;
   attribute float aEdge;
+  attribute float aLayer;
 
   uniform mat4 uProjectionMatrix;
   uniform mat4 uViewMatrix;
@@ -96,10 +128,17 @@ const HUMANOID_VERT = `
   uniform float uFlowShoulder;
   uniform float uFlowNeck;
   uniform float uFlowHead;
+  // .x = structural, .y = luminous, .z = peripheral — see humanoidField.js
+  // LAYER_STRUCTURAL/LUMINOUS/PERIPHERAL and aLayer.
+  uniform vec3 uLayerSizeMul;
+  uniform vec3 uLayerBrightMul;
+  uniform vec3 uLayerSoftness;
 
   varying float vBrightness;
   varying float vEdge;
   varying float vRandom;
+  varying float vSoftness;
+  varying float vLayer;
 
   ${NOISE_GLSL}
 
@@ -135,12 +174,23 @@ const HUMANOID_VERT = `
     vec4 viewPos = uViewMatrix * worldPos;
     gl_Position = uProjectionMatrix * viewPos;
 
-    float sizeAtten = 1.0 / max(-viewPos.z, 0.001);
-    gl_PointSize = aSize * uSizeScale * uPixelRatio * sizeAtten;
+    float sizeMul, brightMul, softnessVal;
+    if (aLayer < 0.5) {
+      sizeMul = uLayerSizeMul.x; brightMul = uLayerBrightMul.x; softnessVal = uLayerSoftness.x;
+    } else if (aLayer < 1.5) {
+      sizeMul = uLayerSizeMul.y; brightMul = uLayerBrightMul.y; softnessVal = uLayerSoftness.y;
+    } else {
+      sizeMul = uLayerSizeMul.z; brightMul = uLayerBrightMul.z; softnessVal = uLayerSoftness.z;
+    }
 
-    vBrightness = aBrightness;
+    float sizeAtten = 1.0 / max(-viewPos.z, 0.001);
+    gl_PointSize = aSize * uSizeScale * uPixelRatio * sizeAtten * sizeMul;
+
+    vBrightness = aBrightness * brightMul;
     vEdge = aEdge;
     vRandom = aRandom;
+    vSoftness = softnessVal;
+    vLayer = aLayer;
   }
 `;
 
@@ -149,6 +199,8 @@ const HUMANOID_FRAG = `
   varying float vBrightness;
   varying float vEdge;
   varying float vRandom;
+  varying float vSoftness;
+  varying float vLayer;
 
   uniform vec3 uColorPrimary;
   uniform vec3 uColorSecondary;
@@ -158,22 +210,25 @@ const HUMANOID_FRAG = `
   uniform float uAudioEnergy;
   uniform float uEnergyBrightnessScale;
 
+  ${PARTICLE_CORE_GLSL}
+
   void main() {
-    vec2 c = gl_PointCoord - 0.5;
-    float d = length(c);
-    float core = smoothstep(0.5, 0.0, d);
-    if (core < 0.02) discard;
+    float profile = particleProfile(gl_PointCoord, vSoftness);
+    if (profile <= 0.0015) discard;
 
     float edgeFade = 1.0 - smoothstep(0.6, 1.7, vEdge);
 
     vec3 color = mix(uColorSecondary, uColorPrimary, clamp(vRandom * 1.3, 0.0, 1.0));
-    color = mix(color, uColorHighlight, clamp((vBrightness - 0.7) * 2.2, 0.0, 1.0) * step(0.82, vRandom));
+    color = mix(color, uColorHighlight, clamp((vBrightness - 0.7) * 1.6, 0.0, 1.0) * step(0.7, vRandom));
+    // Luminous/peripheral layers lean toward the hot highlight color for a
+    // stronger "energy accent" read, distinct from the structural bulk.
+    color = mix(color, uColorHighlight, clamp(vLayer - 0.5, 0.0, 1.0) * 0.4);
 
     // Treble -> fine sparkle concentrated at the peripheral/edge particles.
     float sparkle = uAudioTreble * uTrebleSparkleScale * smoothstep(0.5, 1.3, vEdge) * step(0.6, vRandom);
 
     float energyLift = 1.0 + uAudioEnergy * uEnergyBrightnessScale;
-    float alpha = core * core * vBrightness * edgeFade * energyLift + sparkle * core;
+    float alpha = profile * vBrightness * edgeFade * energyLift + sparkle * profile;
     gl_FragColor = vec4(color, clamp(alpha, 0.0, 1.0));
   }
 `;
@@ -182,8 +237,9 @@ const HUMANOID_FRAG = `
 // far field / fog band / aura / foreground (see humanoidField.js's
 // buildFarField/buildFogBandField/buildAuraField/buildForegroundField and
 // CONFIG.ENVIRONMENT) all share this program — only the per-layer uniforms
-// (color, size, alpha, depth-fade range, drift amount/speed) differ, set
-// fresh before each of the four draw calls in ParticleSystem.draw().
+// (color, size, alpha, softness, depth-fade range, drift amount/speed)
+// differ, set fresh before each of the four draw calls in
+// ParticleSystem._drawEnvLayer().
 const ENV_VERT = `
   attribute vec3 aPosition;
   attribute float aSize;
@@ -204,6 +260,7 @@ const ENV_VERT = `
   uniform float uDriftSpeedScale;
 
   varying float vAlpha;
+  varying float vSoftness;
 
   void main() {
     vec3 pos = aPosition;
@@ -227,12 +284,97 @@ const ENV_FRAG = `
   precision highp float;
   varying float vAlpha;
   uniform vec3 uColor;
+  uniform float uSoftness;
+
+  ${PARTICLE_CORE_GLSL}
+
   void main() {
-    vec2 c = gl_PointCoord - 0.5;
-    float d = length(c);
-    float alpha = smoothstep(0.5, 0.0, d) * vAlpha;
-    if (alpha < 0.006) discard;
+    float profile = particleProfile(gl_PointCoord, uSoftness);
+    float alpha = profile * vAlpha;
+    if (alpha < 0.004) discard;
     gl_FragColor = vec4(uColor, alpha);
+  }
+`;
+
+// ---- Fullscreen-quad post-processing passes --------------------------------
+const QUAD_VERT = `
+  attribute vec2 aPos;
+  attribute vec2 aUV;
+  varying vec2 vUV;
+  void main() {
+    vUV = aUV;
+    gl_Position = vec4(aPos, 0.0, 1.0);
+  }
+`;
+
+const BRIGHT_FRAG = `
+  precision highp float;
+  varying vec2 vUV;
+  uniform sampler2D uScene;
+  uniform float uThreshold;
+  uniform float uKnee;
+  void main() {
+    vec4 c = texture2D(uScene, vUV);
+    float lum = dot(c.rgb, vec3(0.299, 0.587, 0.114));
+    float knee = uKnee + 0.0001;
+    float soft = clamp(lum - uThreshold + knee, 0.0, 2.0 * knee);
+    soft = (soft * soft) / (4.0 * knee);
+    float contrib = max(soft, lum - uThreshold);
+    float scale = contrib / max(lum, 0.0001);
+    gl_FragColor = vec4(c.rgb * scale, 1.0);
+  }
+`;
+
+// Separable 5-tap Gaussian (linear-sampling optimized: 2 texture fetches
+// cover the outer 4 taps), run twice per bloom scale (horizontal, then
+// vertical) — the standard cheap real-time blur.
+const BLUR_FRAG = `
+  precision highp float;
+  varying vec2 vUV;
+  uniform sampler2D uTex;
+  uniform vec2 uTexel;
+  uniform vec2 uDirection;
+  void main() {
+    vec3 sum = texture2D(uTex, vUV).rgb * 0.227027;
+    vec2 off1 = uDirection * uTexel * 1.3846153846;
+    vec2 off2 = uDirection * uTexel * 3.2307692308;
+    sum += texture2D(uTex, vUV + off1).rgb * 0.3162162162;
+    sum += texture2D(uTex, vUV - off1).rgb * 0.3162162162;
+    sum += texture2D(uTex, vUV + off2).rgb * 0.0702702703;
+    sum += texture2D(uTex, vUV - off2).rgb * 0.0702702703;
+    gl_FragColor = vec4(sum, 1.0);
+  }
+`;
+
+const PASSTHROUGH_FRAG = `
+  precision highp float;
+  varying vec2 vUV;
+  uniform sampler2D uTex;
+  void main() {
+    gl_FragColor = texture2D(uTex, vUV);
+  }
+`;
+
+// Recomposites scene + two bloom scales (a tight hot core, a broad soft
+// halo) with a Reinhard-style tonemap so accumulated brightness rolls off
+// smoothly instead of hard-clipping into a flat cyan blob.
+const COMPOSITE_FRAG = `
+  precision highp float;
+  varying vec2 vUV;
+  uniform sampler2D uScene;
+  uniform sampler2D uBloomTight;
+  uniform sampler2D uBloomWide;
+  uniform float uTightStrength;
+  uniform float uWideStrength;
+  uniform float uGamma;
+  void main() {
+    vec4 scene = texture2D(uScene, vUV);
+    vec3 bloomT = texture2D(uBloomTight, vUV).rgb;
+    vec3 bloomW = texture2D(uBloomWide, vUV).rgb;
+    vec3 color = scene.rgb + bloomT * uTightStrength + bloomW * uWideStrength;
+    color = color / (1.0 + color);
+    color = pow(max(color, 0.0), vec3(uGamma));
+    gl_FragColor = vec4(color, scene.a);
   }
 `;
 
@@ -285,6 +427,65 @@ function bindAttrib(gl, program, name, buffer, size) {
 const MAX_ATTRIB_LOCATIONS = 12;
 function resetAttribs(gl) {
   for (let i = 0; i < MAX_ATTRIB_LOCATIONS; i++) gl.disableVertexAttribArray(i);
+}
+
+// ---- Offscreen framebuffer helpers -----------------------------------------
+function createFBO(gl, width, height) {
+  const tex = gl.createTexture();
+  gl.bindTexture(gl.TEXTURE_2D, tex);
+  gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, width, height, 0, gl.RGBA, gl.UNSIGNED_BYTE, null);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+
+  const fbo = gl.createFramebuffer();
+  gl.bindFramebuffer(gl.FRAMEBUFFER, fbo);
+  gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, tex, 0);
+  const status = gl.checkFramebufferStatus(gl.FRAMEBUFFER);
+  gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+  if (status !== gl.FRAMEBUFFER_COMPLETE) {
+    gl.deleteFramebuffer(fbo);
+    gl.deleteTexture(tex);
+    throw new Error('Framebuffer incomplete: 0x' + status.toString(16));
+  }
+  return { fbo, tex, width, height };
+}
+
+function deleteFBO(gl, obj) {
+  if (!obj) return;
+  gl.deleteFramebuffer(obj.fbo);
+  gl.deleteTexture(obj.tex);
+}
+
+function createQuadBuffer(gl) {
+  const buf = gl.createBuffer();
+  gl.bindBuffer(gl.ARRAY_BUFFER, buf);
+  // x, y, u, v — two triangles covering clip space.
+  const data = new Float32Array([
+    -1, -1, 0, 0,
+     1, -1, 1, 0,
+    -1,  1, 0, 1,
+    -1,  1, 0, 1,
+     1, -1, 1, 0,
+     1,  1, 1, 1,
+  ]);
+  gl.bufferData(gl.ARRAY_BUFFER, data, gl.STATIC_DRAW);
+  return buf;
+}
+
+function bindQuadAttribs(gl, program, quadBuffer) {
+  gl.bindBuffer(gl.ARRAY_BUFFER, quadBuffer);
+  const posLoc = gl.getAttribLocation(program, 'aPos');
+  const uvLoc = gl.getAttribLocation(program, 'aUV');
+  if (posLoc >= 0) {
+    gl.enableVertexAttribArray(posLoc);
+    gl.vertexAttribPointer(posLoc, 2, gl.FLOAT, false, 16, 0);
+  }
+  if (uvLoc >= 0) {
+    gl.enableVertexAttribArray(uvLoc);
+    gl.vertexAttribPointer(uvLoc, 2, gl.FLOAT, false, 16, 8);
+  }
 }
 
 /** Rigid body-part hierarchy: shoulder -> neck -> head, driven each frame
@@ -356,6 +557,8 @@ const ENV_LAYERS = [
   { key: 'foreground', builder: buildForegroundField },
 ];
 
+const FBO_KEYS = ['sceneFBO', 'brightFBO', 'tightBlurA', 'tightBlurB', 'wideDownFBO', 'wideBlurA', 'wideBlurB'];
+
 class ParticleSystem {
   constructor(p, counts) {
     this.p = p;
@@ -374,6 +577,62 @@ class ParticleSystem {
 
     this.projectionMatrix = window.glMatrix.mat4.create();
     this.viewMatrix = window.glMatrix.mat4.create();
+
+    this._initBloom();
+  }
+
+  /** Sets up the post-processing pipeline. Failure here (an unusual GL
+   *  implementation that can't complete a render-to-texture framebuffer)
+   *  falls back to rendering the scene straight to the canvas — degraded,
+   *  but never a crash. */
+  _initBloom() {
+    const gl = this.gl;
+    this.bloomSupported = false;
+    try {
+      this.brightProgram = createProgram(gl, QUAD_VERT, BRIGHT_FRAG);
+      this.blurProgram = createProgram(gl, QUAD_VERT, BLUR_FRAG);
+      this.passProgram = createProgram(gl, QUAD_VERT, PASSTHROUGH_FRAG);
+      this.compositeProgram = createProgram(gl, QUAD_VERT, COMPOSITE_FRAG);
+      this.quadBuffer = createQuadBuffer(gl);
+      this._buildFBOs();
+      this.bloomSupported = true;
+    } catch (err) {
+      console.warn('Bloom post-processing unavailable — rendering without it.', err);
+      this.bloomSupported = false;
+    }
+  }
+
+  _disposeFBOs() {
+    const gl = this.gl;
+    for (const key of FBO_KEYS) {
+      if (this[key]) {
+        deleteFBO(gl, this[key]);
+        this[key] = null;
+      }
+    }
+  }
+
+  _buildFBOs() {
+    const gl = this.gl;
+    this._disposeFBOs();
+    const w = Math.max(2, gl.drawingBufferWidth);
+    const h = Math.max(2, gl.drawingBufferHeight);
+    const B = CONFIG.BLOOM;
+    const tw = Math.max(2, Math.floor(w / B.tightResDivisor));
+    const th = Math.max(2, Math.floor(h / B.tightResDivisor));
+    const ww = Math.max(2, Math.floor(w / B.wideResDivisor));
+    const wh = Math.max(2, Math.floor(h / B.wideResDivisor));
+
+    this.sceneFBO = createFBO(gl, w, h);
+    this.brightFBO = createFBO(gl, tw, th);
+    this.tightBlurA = createFBO(gl, tw, th);
+    this.tightBlurB = createFBO(gl, tw, th);
+    this.wideDownFBO = createFBO(gl, ww, wh);
+    this.wideBlurA = createFBO(gl, ww, wh);
+    this.wideBlurB = createFBO(gl, ww, wh);
+
+    this._fboWidth = w;
+    this._fboHeight = h;
   }
 
   buildBuffers(counts) {
@@ -389,6 +648,7 @@ class ParticleSystem {
       random: makeAttribBuffer(gl, field.random),
       seed: makeAttribBuffer(gl, field.seed),
       edge: makeAttribBuffer(gl, field.edge),
+      layer: makeAttribBuffer(gl, field.layer),
     };
 
     this.envBuffers = {};
@@ -421,6 +681,18 @@ class ParticleSystem {
     const C = CONFIG.CAMERA;
     mat4.perspective(this.projectionMatrix, C.fovDeg * (Math.PI / 180), aspect, C.near, C.far);
     mat4.lookAt(this.viewMatrix, [0, C.lookY, C.distance], [0, C.lookY, 0], [0, 1, 0]);
+
+    if (this.bloomSupported) {
+      const gl = this.gl;
+      if (gl.drawingBufferWidth !== this._fboWidth || gl.drawingBufferHeight !== this._fboHeight) {
+        try {
+          this._buildFBOs();
+        } catch (err) {
+          console.warn('Failed to resize bloom framebuffers — disabling bloom.', err);
+          this.bloomSupported = false;
+        }
+      }
+    }
   }
 
   update(dt, pose, pointerVelX, pointerVelY, audio) {
@@ -466,6 +738,7 @@ class ParticleSystem {
     gl.uniform1f(u('uSizeConstant'), E.sizeConstant);
     gl.uniform1f(u('uAlphaBase'), E.alphaBase);
     gl.uniform1f(u('uAlphaRandomScale'), E.alphaRandomScale);
+    gl.uniform1f(u('uSoftness'), E.softness);
     gl.uniform1f(u('uDepthFadeFar'), E.depthFadeFar);
     gl.uniform1f(u('uDepthFadeNear'), E.depthFadeNear);
     gl.uniform1f(u('uDriftAmount'), E.driftAmount);
@@ -479,15 +752,18 @@ class ParticleSystem {
     gl.drawArrays(gl.POINTS, 0, this.envCounts[key]);
   }
 
-  draw(pose, audio) {
+  /** Renders the full scene (environment + humanoid) into whatever
+   *  framebuffer is currently bound — the offscreen sceneFBO when bloom
+   *  is active, or straight to the canvas in the fallback path. */
+  _renderScene(pose, audio) {
     const gl = this.gl;
     gl.enable(gl.BLEND);
     gl.blendFunc(gl.SRC_ALPHA, gl.ONE);
     gl.disable(gl.DEPTH_TEST);
+    gl.clearColor(0, 0, 0, 0);
+    gl.clear(gl.COLOR_BUFFER_BIT);
 
-    // ---- Environment: back-to-front (far -> fog -> aura), all behind or
-    // blending into the humanoid; foreground is drawn last, after the
-    // humanoid, for particles that read as being in front of the figure.
+    // ---- Environment: back-to-front (far -> fog -> aura). ----------------
     resetAttribs(gl);
     gl.useProgram(this.envProgram);
     this._setCommonUniforms(gl, this.envProgram, audio);
@@ -525,6 +801,11 @@ class ParticleSystem {
     gl.uniform3fv(u('uColorSecondary'), CONFIG.COLOR_SECONDARY);
     gl.uniform3fv(u('uColorHighlight'), CONFIG.COLOR_HIGHLIGHT);
 
+    const PL = CONFIG.PARTICLE_LAYERS;
+    gl.uniform3f(u('uLayerSizeMul'), PL.structural.sizeMul, PL.luminous.sizeMul, PL.peripheral.sizeMul);
+    gl.uniform3f(u('uLayerBrightMul'), PL.structural.brightMul, PL.luminous.brightMul, PL.peripheral.brightMul);
+    gl.uniform3f(u('uLayerSoftness'), PL.structural.softness, PL.luminous.softness, PL.peripheral.softness);
+
     const AU = CONFIG.AUDIO;
     gl.uniform1f(u('uAudioMid'), audio.mid);
     gl.uniform1f(u('uMidFlowScale'), AU.midFlowScale);
@@ -541,6 +822,7 @@ class ParticleSystem {
     bindAttrib(gl, hp, 'aRandom', this.humanoidBuffers.random, 1);
     bindAttrib(gl, hp, 'aSeed', this.humanoidBuffers.seed, 3);
     bindAttrib(gl, hp, 'aEdge', this.humanoidBuffers.edge, 1);
+    bindAttrib(gl, hp, 'aLayer', this.humanoidBuffers.layer, 1);
 
     gl.drawArrays(gl.POINTS, 0, this.humanoidCount);
 
@@ -552,6 +834,99 @@ class ParticleSystem {
     this._drawEnvLayer('foreground', 0.09);
   }
 
+  _blurPass(srcTex, destFBO, dirX, dirY) {
+    const gl = this.gl;
+    gl.bindFramebuffer(gl.FRAMEBUFFER, destFBO.fbo);
+    gl.viewport(0, 0, destFBO.width, destFBO.height);
+    resetAttribs(gl);
+    gl.useProgram(this.blurProgram);
+    bindQuadAttribs(gl, this.blurProgram, this.quadBuffer);
+    const u = (name) => gl.getUniformLocation(this.blurProgram, name);
+    gl.activeTexture(gl.TEXTURE0);
+    gl.bindTexture(gl.TEXTURE_2D, srcTex);
+    gl.uniform1i(u('uTex'), 0);
+    gl.uniform2f(u('uTexel'), 1 / destFBO.width, 1 / destFBO.height);
+    gl.uniform2f(u('uDirection'), dirX, dirY);
+    gl.drawArrays(gl.TRIANGLES, 0, 6);
+  }
+
+  /** Full pipeline: scene -> offscreen FBO -> bright-pass -> two blur
+   *  scales (tight + wide) -> tonemapped composite onto the canvas. */
+  _drawWithBloom(pose, audio) {
+    const gl = this.gl;
+    const B = CONFIG.BLOOM;
+
+    gl.bindFramebuffer(gl.FRAMEBUFFER, this.sceneFBO.fbo);
+    gl.viewport(0, 0, this.sceneFBO.width, this.sceneFBO.height);
+    this._renderScene(pose, audio);
+
+    gl.disable(gl.BLEND);
+
+    // Bright-pass.
+    gl.bindFramebuffer(gl.FRAMEBUFFER, this.brightFBO.fbo);
+    gl.viewport(0, 0, this.brightFBO.width, this.brightFBO.height);
+    resetAttribs(gl);
+    gl.useProgram(this.brightProgram);
+    bindQuadAttribs(gl, this.brightProgram, this.quadBuffer);
+    gl.activeTexture(gl.TEXTURE0);
+    gl.bindTexture(gl.TEXTURE_2D, this.sceneFBO.tex);
+    gl.uniform1i(gl.getUniformLocation(this.brightProgram, 'uScene'), 0);
+    gl.uniform1f(gl.getUniformLocation(this.brightProgram, 'uThreshold'), B.threshold);
+    gl.uniform1f(gl.getUniformLocation(this.brightProgram, 'uKnee'), B.knee);
+    gl.drawArrays(gl.TRIANGLES, 0, 6);
+
+    // Tight bloom: brightFBO -> blur H -> blur V.
+    this._blurPass(this.brightFBO.tex, this.tightBlurA, 1, 0);
+    this._blurPass(this.tightBlurA.tex, this.tightBlurB, 0, 1);
+
+    // Downsample brightFBO into the wide scale's smaller resolution.
+    gl.bindFramebuffer(gl.FRAMEBUFFER, this.wideDownFBO.fbo);
+    gl.viewport(0, 0, this.wideDownFBO.width, this.wideDownFBO.height);
+    resetAttribs(gl);
+    gl.useProgram(this.passProgram);
+    bindQuadAttribs(gl, this.passProgram, this.quadBuffer);
+    gl.activeTexture(gl.TEXTURE0);
+    gl.bindTexture(gl.TEXTURE_2D, this.brightFBO.tex);
+    gl.uniform1i(gl.getUniformLocation(this.passProgram, 'uTex'), 0);
+    gl.drawArrays(gl.TRIANGLES, 0, 6);
+
+    // Wide bloom: wideDownFBO -> blur H -> blur V.
+    this._blurPass(this.wideDownFBO.tex, this.wideBlurA, 1, 0);
+    this._blurPass(this.wideBlurA.tex, this.wideBlurB, 0, 1);
+
+    // Composite -> canvas.
+    gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+    gl.viewport(0, 0, gl.drawingBufferWidth, gl.drawingBufferHeight);
+    resetAttribs(gl);
+    gl.useProgram(this.compositeProgram);
+    bindQuadAttribs(gl, this.compositeProgram, this.quadBuffer);
+    const cu = (name) => gl.getUniformLocation(this.compositeProgram, name);
+    gl.activeTexture(gl.TEXTURE0);
+    gl.bindTexture(gl.TEXTURE_2D, this.sceneFBO.tex);
+    gl.uniform1i(cu('uScene'), 0);
+    gl.activeTexture(gl.TEXTURE1);
+    gl.bindTexture(gl.TEXTURE_2D, this.tightBlurB.tex);
+    gl.uniform1i(cu('uBloomTight'), 1);
+    gl.activeTexture(gl.TEXTURE2);
+    gl.bindTexture(gl.TEXTURE_2D, this.wideBlurB.tex);
+    gl.uniform1i(cu('uBloomWide'), 2);
+    gl.uniform1f(cu('uTightStrength'), B.tightStrength);
+    gl.uniform1f(cu('uWideStrength'), B.wideStrength);
+    gl.uniform1f(cu('uGamma'), B.tonemapGamma);
+    gl.drawArrays(gl.TRIANGLES, 0, 6);
+  }
+
+  draw(pose, audio) {
+    const gl = this.gl;
+    if (this.bloomSupported) {
+      this._drawWithBloom(pose, audio);
+    } else {
+      gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+      gl.viewport(0, 0, gl.drawingBufferWidth, gl.drawingBufferHeight);
+      this._renderScene(pose, audio);
+    }
+  }
+
   dispose() {
     const gl = this.gl;
     for (const buf of Object.values(this.humanoidBuffers)) gl.deleteBuffer(buf);
@@ -560,5 +935,13 @@ class ParticleSystem {
     }
     gl.deleteProgram(this.humanoidProgram);
     gl.deleteProgram(this.envProgram);
+    if (this.bloomSupported) {
+      this._disposeFBOs();
+      gl.deleteBuffer(this.quadBuffer);
+      gl.deleteProgram(this.brightProgram);
+      gl.deleteProgram(this.blurProgram);
+      gl.deleteProgram(this.passProgram);
+      gl.deleteProgram(this.compositeProgram);
+    }
   }
 }
