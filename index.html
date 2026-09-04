@@ -10,15 +10,69 @@
     />
     <link rel="stylesheet" href="style.css" />
 
+    <!-- Boot watchdog: every script below is loaded as a plain classic
+         <script> (no type="module", no bundler, no transpilation step —
+         this is a static site, and must keep working as one). If any file
+         404s, is served with the wrong MIME type, or throws while running,
+         p5's setup() never calls markAppStarted() and the activation
+         screen would otherwise sit there forever with no explanation. This
+         watchdog turns that into a visible, readable error instead. -->
+    <script>
+      (function () {
+        window.__bootErrors = [];
+        window.__appStarted = false;
+
+        function render() {
+          var el = document.getElementById('fatal-error');
+          if (!el) return;
+          el.hidden = false;
+          var pre = el.querySelector('pre');
+          pre.textContent =
+            'No se pudo iniciar la experiencia / Failed to start.\n\n' +
+            window.__bootErrors.slice(-6).join('\n') +
+            '\n\nCheck the browser console. Make sure this page is served ' +
+            'over a plain static HTTP server (e.g. `python3 -m http.server`) ' +
+            'from the project root, that you have pulled the latest commit, ' +
+            'and that the page was hard-reloaded (old cached HTML/JS can ' +
+            'reference files that no longer exist).';
+        }
+
+        window.__scriptLoadError = function (src) {
+          window.__bootErrors.push('Failed to load script: ' + src);
+          render();
+        };
+        window.__markAppStarted = function () {
+          window.__appStarted = true;
+        };
+        window.addEventListener('error', function (e) {
+          var msg = (e && e.message) || (e.error && e.error.message) || 'Unknown script error';
+          var loc = e && e.filename ? ' (' + e.filename + (e.lineno ? ':' + e.lineno : '') + ')' : '';
+          window.__bootErrors.push(msg + loc);
+          render();
+        });
+        window.setTimeout(function () {
+          if (!window.__appStarted) {
+            window.__bootErrors.push(
+              'Initialization timed out after 6s — a required script failed ' +
+                'to load or run before setup() could start.'
+            );
+            render();
+          }
+        }, 6000);
+      })();
+    </script>
+
     <!-- p5.js core + sound addon (microphone input / FFT). Vendored locally
          in lib/ (fetched from npm) rather than a CDN, so the project runs
          from a plain static server with no build step and no external
-         network dependency at runtime. -->
-    <script src="lib/p5.min.js"></script>
-    <script src="lib/p5.sound.min.js"></script>
+         network dependency at runtime. Plain classic scripts throughout —
+         never type="module", never a .ts file: this is p5.js + JavaScript,
+         not the earlier Vite/TypeScript build. -->
+    <script src="lib/p5.min.js" onerror="window.__scriptLoadError(this.src)"></script>
+    <script src="lib/p5.sound.min.js" onerror="window.__scriptLoadError(this.src)"></script>
     <!-- gl-matrix: small vector/matrix math library used for the GPU particle
          system's rigid body-part transforms (mat4/quat), driven raw WebGL. -->
-    <script src="lib/gl-matrix-min.js"></script>
+    <script src="lib/gl-matrix-min.js" onerror="window.__scriptLoadError(this.src)"></script>
   </head>
   <body>
     <div id="activation">
@@ -26,15 +80,16 @@
       <p id="activate-hint">Requiere acceso al micrófono</p>
     </div>
     <div id="debug" hidden></div>
+    <div id="fatal-error" hidden><pre></pre></div>
 
     <!-- Project scripts. Each file only DEFINES globals (config, classes,
          functions); sketch.js instantiates everything inside setup(), so
          load order between these only needs to precede sketch.js. -->
-    <script src="config.js"></script>
-    <script src="attention.js"></script>
-    <script src="audio.js"></script>
-    <script src="humanoidField.js"></script>
-    <script src="particleSystem.js"></script>
-    <script src="sketch.js"></script>
+    <script src="config.js" onerror="window.__scriptLoadError(this.src)"></script>
+    <script src="attention.js" onerror="window.__scriptLoadError(this.src)"></script>
+    <script src="audio.js" onerror="window.__scriptLoadError(this.src)"></script>
+    <script src="humanoidField.js" onerror="window.__scriptLoadError(this.src)"></script>
+    <script src="particleSystem.js" onerror="window.__scriptLoadError(this.src)"></script>
+    <script src="sketch.js" onerror="window.__scriptLoadError(this.src)"></script>
   </body>
 </html>

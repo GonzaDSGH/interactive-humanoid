@@ -68,6 +68,39 @@ canvas {
   color: rgba(180, 220, 235, 0.4);
 }
 
+#fatal-error {
+  position: fixed;
+  inset: 0;
+  z-index: 30;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 40px;
+  text-align: left;
+  background: #010208;
+}
+
+/* Higher specificity than the bare #fatal-error rule above (ID + attribute
+   beats ID alone) — without this, [hidden]'s default display:none would be
+   overridden by our own display:flex, leaving the overlay invisible but
+   still intercepting clicks. */
+#fatal-error[hidden] {
+  display: none;
+}
+
+#fatal-error pre {
+  max-width: 640px;
+  font-family: 'SFMono-Regular', Consolas, 'Liberation Mono', Menlo, monospace;
+  font-size: 12px;
+  line-height: 1.6;
+  color: #ff9d9d;
+  white-space: pre-wrap;
+  border: 1px solid rgba(255, 120, 120, 0.35);
+  border-radius: 4px;
+  padding: 20px 24px;
+  background: rgba(40, 8, 8, 0.35);
+}
+
 #debug {
   position: fixed;
   bottom: 12px;
