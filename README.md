@@ -33,11 +33,15 @@ No build step, no bundler, no `npm install` required to run — `p5.js`,
 
 ## Controls
 
-- **Mouse / pointer** — secondary input, "attention." The figure's face,
-  head, neck, shoulders and torso turn toward the pointer in a cascade,
-  each stage lagging and settling a little more than the last, with a
-  smooth ease back to a neutral, centered pose a moment after the pointer
-  leaves the window.
+- **Mouse / pointer** — secondary input, "attention," modeled as human gaze
+  rather than object rotation: an anatomical motion hierarchy where the
+  face/head does almost all of the visible turning, the neck absorbs a
+  small secondary fraction of it, the shoulders barely move, and the torso
+  doesn't rotate toward the pointer at all — it's a fixed anchor the rest
+  of the figure sits on (see `attention.js`/`config.js`'s `LIMITS`). Each
+  stage still lags and settles a little more than the last (a real spring-
+  damper cascade, not a lerp), with a smooth ease back to a neutral,
+  centered pose a moment after the pointer leaves the window.
 - **Microphone** — primary hardware input, "internal energy." Bass drives
   a slow structural breathing pulse, mid frequencies drive internal
   turbulence in the particle flow, treble adds fine sparkle at the figure's
@@ -54,7 +58,7 @@ No build step, no bundler, no `npm install` required to run — `p5.js`,
 | `index.html` | Loads the vendored libraries and project scripts, in order. |
 | `style.css` | Fullscreen canvas, activation-screen overlay, debug panel styling, the CSS radial-gradient atmospheric backdrop behind the (alpha-transparent) WebGL canvas. |
 | `config.js` | Every tunable constant: quality presets, palette, camera, skeleton proportions, body-part field shapes, the head mesh's transform/sampling constants (`CONFIG.HEAD_MESH`), particle sizing, audio-reactivity scales, idle motion, and the pointer-attention dynamics. |
-| `attention.js` | The pointer-attention system: `SecondOrderDynamics` (a critically/under-damped spring filter), `PointerTracker` (raw pointer state + return-to-center-on-leave), and `AttentionController` (the face → head → neck → shoulders → torso cascade). Framework-agnostic plain JS. |
+| `attention.js` | The pointer-attention system: `SecondOrderDynamics` (a critically/under-damped spring filter), `PointerTracker` (raw pointer state + return-to-center-on-leave), and `AttentionController` (the face → head → neck → shoulders cascade — torso is deliberately not part of it, see "Motion hierarchy" below). Framework-agnostic plain JS. |
 | `audio.js` | `AudioAnalyzer` — wraps `p5.AudioIn` + `p5.FFT`, started from the activation button's click (required by browser autoplay/mic policy), exposing smoothed `amplitude`/`bass`/`mid`/`treble`. |
 | `humanoidField.js` | No mesh is ever *rendered*. This module decides *where particles are allowed to exist*: the head/face come from real mesh surface samples (see `headMesh.js`), neck/shoulders from analytic ellipsoid volumes shaped by direction-dependent radius functions (`shoulderShape`) that sculpt clavicles, deltoids, trapezius, etc. purely through particle placement. |
 | `headMesh.js` | Turns `assets/head-mesh.json` (a real scanned/sculpted human head — positions + triangle indices only) into particle sample data: area-weighted triangle surface sampling, landmark-biased salience weighting, and three explicit particle populations (structural/salience/peripheral). See "Head geometry" below. |
@@ -67,12 +71,22 @@ No build step, no bundler, no `npm install` required to run — `p5.js`,
 
 The head is not a hand-authored formula — its particle positions are
 sampled from `assets/head-mesh.json`, a real human head mesh (positions +
-triangle indices only). **The mesh itself is never drawn**: there is no
-mesh renderer anywhere in this project, no solid shading, no wireframe, no
-textured face. It exists purely as an invisible geometric guide that
-`headMesh.js` turns into particle sample data, once, at load time — the
-exact same job `humanoidField.js`'s analytic shape functions do for the
-neck and shoulders, just sourced from real anatomy instead of a formula.
+triangle indices only; currently `male_head_mid_jc.OBJ` — a higher-poly
+`male_head_high_jc.OBJ`, ~16x the triangle count, was profiled too, but the
+mid mesh already reads clearly human at both frontal and profile angles at
+a fraction of the asset weight). **The mesh itself is never drawn**: there
+is no mesh renderer anywhere in this project, no solid shading, no
+wireframe, no textured face. It exists purely as an invisible geometric
+guide that `headMesh.js` turns into particle sample data, once, at load
+time — the exact same job `humanoidField.js`'s analytic shape functions do
+for the neck and shoulders, just sourced from real anatomy instead of a
+formula. Source meshes aren't always triangulated or Z-forward the same
+way: this one ships as quads with no vertex normals (triangulated into
+`head-mesh.json` at prep time) and its own front-facing direction is -Z,
+the opposite of this project's +Z-is-front convention — `CONFIG.HEAD_MESH.
+flipZ` mirrors it back (a sign, not a stretch, so proportions stay real)
+and `headMesh.js` corrects the resulting inverted triangle handedness so
+peripheral/aura samples still push outward, not into the head.
 
 - **Area-weighted surface sampling** (`pickHeadMeshTriangle` /
   `sampleHeadMeshTriangle`): each triangle's contribution to the sampling
@@ -114,6 +128,42 @@ neck and shoulders, just sourced from real anatomy instead of a formula.
   mesh's own neck-narrowest point lands just above the rigid head pivot
   (`particleSystem.js`'s `Pivots`), inside the existing neck sampler's own
   upward overlap reach.
+
+### Motion hierarchy: gaze, not object rotation
+
+Pointer tracking is an anatomical motion hierarchy, not one global
+rotation applied to the whole figure. `particleSystem.js`'s `Pivots` chains
+transforms torso → shoulders → neck → head, each one the *parent* frame
+the next sits inside — so torso is the root every other part inherits, and
+rotating it necessarily visibly rotates the entire figure with it. An
+earlier pass gave torso a small nonzero pointer-driven rotation (a few
+degrees, same as the other stages) and that alone read as "the whole bust
+turning toward the pointer," because a few degrees at the root scales up
+through everything downstream of it.
+
+The fix was architectural, not a tuning number: `attention.js`'s
+`AttentionController` never computes a torso rotation at all any more —
+`pose.torso` is a fixed `{yaw: 0, pitch: 0, roll: 0}` for the object's
+whole lifetime, a genuine static anchor rather than a pointer stage with a
+small limit. `CONFIG.LIMITS`/`CONFIG.DYNAMICS` have no `torso` entry
+either, since there's nothing left to tune. What the pointer *does* drive
+(`CONFIG.LIMITS`, in `config.js`):
+
+| Region | Yaw limit | Pitch limit | Role |
+| --- | --- | --- | --- |
+| face (`faceShift`) | — (2D screen-space nudge) | — | Highest priority — the face notices first, before any rotation. |
+| head | ±22° | ±11° | The dominant, strongly visible response — this is what should read as "looking at you." |
+| neck | ±4° | ±2° | A small secondary fraction of the head's own motion (~18%), not an independent response. |
+| shoulders | ±1° | ±0.4° | Near-motionless — a hint of life, never directional tracking. |
+| torso | 0° | 0° | Not part of the cascade. Fixed. |
+
+Verified numerically (not just visually): at a held pointer extreme, the
+computed `torsoMat` carries only the autonomous breathing scale (no
+rotation terms at all), `shoulderMat`'s rotation stays under a degree, and
+`headMat` does essentially all of the visible turning — see the pivot
+chain in `particleSystem.js`'s `Pivots.update()`. The pitch sign
+convention (pointer-up looks up, not down) is unchanged from before — only
+the per-region magnitudes and the torso decoupling changed here.
 
 ### Particle architecture
 

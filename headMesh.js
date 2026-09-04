@@ -63,11 +63,15 @@ function initHeadMesh(raw) {
   const rawPos = raw.positions;
   const vertCount = rawPos.length / 3;
 
+  // flipZ is a sign only (a mirror to match this project's +Z-is-front
+  // convention), never a magnitude difference from the X/Y scale — see
+  // CONFIG.HEAD_MESH's comment.
+  const zSign = HM.flipZ ? -1 : 1;
   const positions = new Float32Array(rawPos.length);
   for (let i = 0; i < vertCount; i++) {
     positions[i * 3] = rawPos[i * 3] * HM.scale + HM.offsetX;
     positions[i * 3 + 1] = rawPos[i * 3 + 1] * HM.scale + HM.offsetY;
-    positions[i * 3 + 2] = rawPos[i * 3 + 2] * HM.scale + HM.offsetZ;
+    positions[i * 3 + 2] = rawPos[i * 3 + 2] * HM.scale * zSign + HM.offsetZ;
   }
 
   const faces = new Uint32Array(raw.faces);
@@ -105,7 +109,7 @@ function initHeadMesh(raw) {
     landmarks.push({
       x: p[0] * HM.scale + HM.offsetX,
       y: p[1] * HM.scale + HM.offsetY,
-      z: p[2] * HM.scale + HM.offsetZ,
+      z: p[2] * HM.scale * zSign + HM.offsetZ,
     });
   }
 
@@ -115,6 +119,7 @@ function initHeadMesh(raw) {
   HEAD_MESH.totalWeight = acc;
   HEAD_MESH.triCount = triCount;
   HEAD_MESH.landmarks = landmarks;
+  HEAD_MESH.normalSign = HM.flipZ ? -1 : 1;
   HEAD_MESH.landmarkRadius2 = (HM.landmarkRadius * HM.scale) * (HM.landmarkRadius * HM.scale);
   HEAD_MESH.ready = true;
 }
@@ -160,9 +165,14 @@ function sampleHeadMeshTriangle(tri) {
   let ny = e1z * e2x - e1x * e2z;
   let nz = e1x * e2y - e1y * e2x;
   const len = Math.sqrt(nx * nx + ny * ny + nz * nz) || 1;
-  _headMeshSample.nx = nx / len;
-  _headMeshSample.ny = ny / len;
-  _headMeshSample.nz = nz / len;
+  // A single-axis mirror (CONFIG.HEAD_MESH.flipZ) inverts triangle
+  // handedness, which flips cross(e1,e2) to point inward instead of
+  // outward — negate it back so peripheral/aura samples still push away
+  // from the surface, not into it.
+  const sign = HEAD_MESH.normalSign;
+  _headMeshSample.nx = (nx / len) * sign;
+  _headMeshSample.ny = (ny / len) * sign;
+  _headMeshSample.nz = (nz / len) * sign;
   return _headMeshSample;
 }
 

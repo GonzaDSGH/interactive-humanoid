@@ -1,9 +1,11 @@
 /**
- * Pointer-attention interaction system — ported near-verbatim from the
- * project's earlier Three.js implementation. This is the proven core the
- * whole redesign was told to preserve: a real second-order (spring-damper)
- * filter cascaded through face -> head -> neck -> shoulders -> torso, not
- * a plain lerp. Framework-agnostic; only reads normalized pointer values.
+ * Pointer-attention interaction system — a real second-order (spring-
+ * damper) filter cascaded through face -> head -> neck -> shoulders, not a
+ * plain lerp. Torso is deliberately NOT part of this cascade — it's a
+ * fixed static anchor (see AttentionController's pose.torso and the
+ * anatomical motion hierarchy note in config.js): this should read as a
+ * person's face/head turning toward the viewer, not the whole bust
+ * rotating. Framework-agnostic; only reads normalized pointer values.
  */
 
 /**
@@ -122,13 +124,19 @@ class AttentionController {
     this.neckY = new SecondOrderDynamics(d.neck.f, d.neck.z, d.neck.r);
     this.shoulderX = new SecondOrderDynamics(d.shoulders.f, d.shoulders.z, d.shoulders.r);
     this.shoulderY = new SecondOrderDynamics(d.shoulders.f, d.shoulders.z, d.shoulders.r);
-    this.torsoX = new SecondOrderDynamics(d.torso.f, d.torso.z, d.torso.r);
-    this.torsoY = new SecondOrderDynamics(d.torso.f, d.torso.z, d.torso.r);
 
     this.pose = {
       head: { yaw: 0, pitch: 0, roll: 0 },
       neck: { yaw: 0, pitch: 0, roll: 0 },
       shoulders: { yaw: 0, pitch: 0, roll: 0, bob: 0 },
+      // Torso is a fixed static anchor, never pointer-driven — see the
+      // anatomical motion hierarchy note at the top of config.js. It sits
+      // at the root of particleSystem.js's Pivots chain, so any nonzero
+      // rotation here would visibly rotate the entire figure (shoulders,
+      // neck and head all inherit it) — exactly the "whole bust turns
+      // toward the pointer" behavior this hierarchy replaces. These
+      // fields stay {0,0,0} for the object's lifetime; nothing in
+      // update() ever writes to them.
       torso: { yaw: 0, pitch: 0, roll: 0 },
       faceShift: { x: 0, y: 0 },
       pointerSpeed: 0,
@@ -174,11 +182,8 @@ class AttentionController {
     this.pose.shoulders.roll = clamp(-sx * sy, -1, 1) * L.shoulders.roll;
     this.pose.shoulders.bob = sy * L.shoulders.bob;
 
-    const tx = this.torsoX.update(dt, sx);
-    const ty = this.torsoY.update(dt, sy);
-    this.pose.torso.yaw = tx * L.torso.yaw;
-    this.pose.torso.pitch = -ty * L.torso.pitch;
-    this.pose.torso.roll = clamp(-tx * ty, -1, 1) * L.torso.roll;
+    // pose.torso is intentionally never touched here — see the comment on
+    // it in the constructor and the motion-hierarchy note in config.js.
 
     this.pose.pointerSpeed = this.pointer.speed;
 

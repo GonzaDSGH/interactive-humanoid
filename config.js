@@ -3,8 +3,22 @@
  * shapes and interaction dynamics all live here.
  *
  * DYNAMICS / LIMITS / POINTER are the pointer-attention interaction core
- * (see attention.js) and should stay stable. Everything else is the
- * generative visual system and is safe to retune freely.
+ * (see attention.js). The SecondOrderDynamics cascade mechanism itself is
+ * the proven, stable part; the per-region weighting below implements a
+ * strict anatomical motion hierarchy — pointer tracking should read as a
+ * person's gaze/head turning toward the viewer, not as the whole bust
+ * rotating like a turret. Torso is intentionally NOT pointer-driven at
+ * all (see attention.js AttentionController — pose.torso is a fixed
+ * static anchor, no cascade stage feeds it): torso sits at the ROOT of
+ * the shoulder->neck->head pivot chain in particleSystem.js's Pivots, so
+ * even a small nonzero torso rotation visibly rotates the entire figure
+ * (shoulders, neck and head all inherit it) — which was exactly the
+ * "whole bust turns toward the pointer" bug this hierarchy fixes. Face
+ * leads (highest influence, see LIMITS.faceShift) -> head follows
+ * strongly -> neck absorbs a small secondary fraction of it -> shoulders
+ * stay nearly static -> torso never moves for pointer tracking at all.
+ * Everything else in this file is the generative visual system and is
+ * safe to retune freely.
  */
 
 const DEG = Math.PI / 180;
@@ -68,37 +82,49 @@ const CONFIG = {
   // head particles are area-weighted surface samples of a real scanned/
   // sculpted human head mesh (assets/head-mesh.json — positions + triangle
   // indices only, in the mesh's own coordinate space; loaded once via
-  // p5's loadJSON in preload()). The mesh itself is NEVER rendered — only
-  // sampled points feed the exact same particle pipeline the old
-  // procedural head used (writeParticle, the structural/luminous/
+  // p5's loadJSON in preload()). Source: male_head_mid_jc.OBJ (the higher-
+  // poly male_head_high_jc.OBJ was also profiled — 200k quads vs. this
+  // one's 12.5k — but the mid mesh already reads clearly human at both
+  // frontal and profile angles, at a fraction of the asset size, so there
+  // was no reason to pay the extra weight). The mesh itself is NEVER
+  // rendered — only sampled points feed the exact same particle pipeline
+  // the old procedural head used (writeParticle, the structural/luminous/
   // peripheral layer split, the shoulder->neck->head skinning). scale/
-  // offsetY/offsetZ map the mesh's own meters into this project's
+  // offsetY/offsetZ map the mesh's own units into this project's
   // head-local particle space (head-local y=0 is the rigid head pivot —
   // see particleSystem.js Pivots — which sits below the visible head,
   // roughly at the atlanto-occipital joint, matching where the old
   // procedural head/face content also bottomed out).
   HEAD_MESH: {
     url: 'assets/head-mesh.json',
-    // Uniform scale only (no per-axis stretch) — the whole point of using
-    // a real mesh is real proportions; a non-uniform scale would distort
-    // them right back into the "blob" look this replaces.
-    scale: 3.6,
+    // Uniform scale magnitude only (no per-axis stretch) — the whole point
+    // of using a real mesh is real proportions; a non-uniform scale would
+    // distort them right back into the "blob" look this replaces. flipZ is
+    // a sign only (a mirror, not a stretch): this mesh's own front-facing
+    // direction is -Z (verified by rendering it both ways offline — +Z
+    // showed the back of the skull), the opposite of this project's own
+    // +Z-is-front convention, so Z gets negated on the way in.
+    scale: 0.43,
+    flipZ: true,
     offsetX: 0,
-    // Calibrated so the mesh's own neck-narrowest point (y ~= 0.155 in
-    // the mesh's own space, found via a radius-vs-height profile of the
-    // vertex data) lands just above the head pivot (head-local y ~= 0.05),
-    // safely inside the existing procedural neck's own upward overlap
-    // reach (sampleNeck samples up to neck-local y = height*1.68).
-    offsetY: -0.508,
+    // Calibrated so the mesh's own neck-narrowest point (y ~= -1.45 in the
+    // mesh's own space — the flat, minimal-radius band of its radius-vs-
+    // height profile, well below the jaw/chin) lands just above the head
+    // pivot (head-local y ~= 0.05), safely inside the existing procedural
+    // neck's own upward overlap reach (sampleNeck samples up to neck-local
+    // y = height*1.68).
+    offsetY: 0.6735,
     offsetZ: 0,
     // Mesh-space (pre-scale) Y band over which triangles fade OUT of the
-    // sample pool: below fadeLowY is the mesh's shirt-collar/bust base
-    // (never sampled — the procedural neck/shoulders own that territory
-    // entirely), between fadeLowY and fadeHighY inclusion weight ramps
-    // 0->1 so the OBJ-derived jaw/neck stub feathers into the procedural
-    // neck instead of a hard geometric seam.
-    fadeLowY: 0.06,
-    fadeHighY: 0.16,
+    // sample pool: below fadeLowY is shoulder/deltoid territory (the
+    // procedural shoulders own that entirely), between fadeLowY and
+    // fadeHighY inclusion weight ramps 0->1 through the neck cylinder, so
+    // the OBJ-derived jaw/neck stub feathers into the procedural neck
+    // instead of a hard geometric seam. Note fadeLowY < fadeHighY here
+    // (both negative — this mesh's face sits at negative Y, unlike the
+    // previous source mesh's positive-Y convention).
+    fadeLowY: -1.9,
+    fadeHighY: -1.2,
     // Landmark centers in the mesh's OWN (pre-transform) space, found by
     // querying the actual vertex data for local extrema (most-forward
     // point for the nose tip, widest point per height band for cheek/jaw,
@@ -112,19 +138,22 @@ const CONFIG = {
     // luminous particles piling up on a small screen-space area) — the
     // single worst readability failure in an early pass of this system.
     landmarks: {
-      browR: [0.021, 0.329, 0.139], browL: [-0.021, 0.329, 0.139],
-      noseBridge: [0, 0.295, 0.125], noseTip: [0, 0.266, 0.160],
-      cheekR: [0.100, 0.289, 0.007], cheekL: [-0.100, 0.289, 0.007],
-      mouth: [0, 0.1875, 0.1275],
-      jawR: [0.109, 0.131, -0.035], jawL: [-0.109, 0.131, -0.035],
-      chin: [0, 0.1785, 0.0965],
+      browR: [0.128, 0.125, -0.979], browL: [-0.128, 0.125, -0.979],
+      noseTip: [0, -0.65, -1.165],
+      cheekR: [0.837, -0.282, -0.157], cheekL: [-0.837, -0.282, -0.157],
+      mouth: [0, -0.756, -1.051],
+      jawR: [0.827, -0.752, 0.156], jawL: [-0.827, -0.752, 0.156],
+      chin: [0, -1.335, -0.905],
     },
     // Gaussian falloff radius for landmark proximity (mesh-space units,
     // pre-scale) and how strongly it biases the salience population's
     // rejection sampling / brightness. Kept tight — a wide radius lets
     // neighboring landmarks' gaussians sum together into one big bright
-    // patch instead of distinct accents (also found the hard way).
-    landmarkRadius: 0.032,
+    // patch instead of distinct accents (also found the hard way). Scaled
+    // up from the previous mesh's 0.032 by the same factor its own scale
+    // dropped by (3.6 -> 0.43), so the resulting head-local radius (the
+    // number that actually matters) stays the same, ~0.115.
+    landmarkRadius: 0.27,
     // How far peripheral/aura samples get pushed outward along the local
     // surface normal, in head-local units (post-scale) — a loose shell
     // just outside the strict surface, not sitting on it.
@@ -318,20 +347,28 @@ const CONFIG = {
   },
 
   // ---- Pointer -> attention dynamics (INTERACTION CORE) ------------------
+  // No `torso` entry here on purpose — torso is not part of the pointer
+  // cascade at all any more (see attention.js), so it has no dynamics or
+  // limits to tune.
   DYNAMICS: {
     input: { f: 7.5, z: 1.0, r: 0 },
     face: { f: 4.4, z: 0.62, r: 1.4 },
     head: { f: 2.6, z: 0.68, r: 1.0 },
     neck: { f: 1.55, z: 0.78, r: 0.5 },
     shoulders: { f: 0.95, z: 0.88, r: 0.3 },
-    torso: { f: 0.62, z: 0.95, r: 0.2 },
   },
 
+  // Regional weighting for the anatomical motion hierarchy: face leads
+  // (faceShift, applied before any rotation even happens), head follows
+  // with the strongest rotation, neck absorbs only a small secondary
+  // fraction of the head's own motion (~15-20%), shoulders stay close to
+  // motionless (a hint of life, not tracking). Head yaw/pitch are chosen
+  // to read as a person visually tracking something, not a turret: real
+  // limits on gaze rotation, not a full swivel.
   LIMITS: {
-    head: { yaw: 24 * DEG, pitch: 14 * DEG, roll: 2.6 * DEG },
-    neck: { yaw: 10 * DEG, pitch: 6 * DEG, roll: 1.2 * DEG },
-    shoulders: { yaw: 4 * DEG, pitch: 1.6 * DEG, roll: 0.8 * DEG, bob: 0.014 },
-    torso: { yaw: 5.5 * DEG, pitch: 2.4 * DEG, roll: 0.6 * DEG },
+    head: { yaw: 22 * DEG, pitch: 11 * DEG, roll: 2.2 * DEG },
+    neck: { yaw: 4 * DEG, pitch: 2 * DEG, roll: 0.4 * DEG },
+    shoulders: { yaw: 1 * DEG, pitch: 0.4 * DEG, roll: 0.2 * DEG, bob: 0.003 },
     faceShift: 0.052,
   },
 
