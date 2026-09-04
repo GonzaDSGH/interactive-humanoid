@@ -63,18 +63,84 @@ const CONFIG = {
     groupOffsetY: -0.4,
   },
 
+  // ---- Head geometry source: real OBJ mesh, sampled -> particles ---------
+  // The head/face is no longer procedural (see headMesh.js): the visible
+  // head particles are area-weighted surface samples of a real scanned/
+  // sculpted human head mesh (assets/head-mesh.json — positions + triangle
+  // indices only, in the mesh's own coordinate space; loaded once via
+  // p5's loadJSON in preload()). The mesh itself is NEVER rendered — only
+  // sampled points feed the exact same particle pipeline the old
+  // procedural head used (writeParticle, the structural/luminous/
+  // peripheral layer split, the shoulder->neck->head skinning). scale/
+  // offsetY/offsetZ map the mesh's own meters into this project's
+  // head-local particle space (head-local y=0 is the rigid head pivot —
+  // see particleSystem.js Pivots — which sits below the visible head,
+  // roughly at the atlanto-occipital joint, matching where the old
+  // procedural head/face content also bottomed out).
+  HEAD_MESH: {
+    url: 'assets/head-mesh.json',
+    // Uniform scale only (no per-axis stretch) — the whole point of using
+    // a real mesh is real proportions; a non-uniform scale would distort
+    // them right back into the "blob" look this replaces.
+    scale: 3.6,
+    offsetX: 0,
+    // Calibrated so the mesh's own neck-narrowest point (y ~= 0.155 in
+    // the mesh's own space, found via a radius-vs-height profile of the
+    // vertex data) lands just above the head pivot (head-local y ~= 0.05),
+    // safely inside the existing procedural neck's own upward overlap
+    // reach (sampleNeck samples up to neck-local y = height*1.68).
+    offsetY: -0.508,
+    offsetZ: 0,
+    // Mesh-space (pre-scale) Y band over which triangles fade OUT of the
+    // sample pool: below fadeLowY is the mesh's shirt-collar/bust base
+    // (never sampled — the procedural neck/shoulders own that territory
+    // entirely), between fadeLowY and fadeHighY inclusion weight ramps
+    // 0->1 so the OBJ-derived jaw/neck stub feathers into the procedural
+    // neck instead of a hard geometric seam.
+    fadeLowY: 0.06,
+    fadeHighY: 0.16,
+    // Landmark centers in the mesh's OWN (pre-transform) space, found by
+    // querying the actual vertex data for local extrema (most-forward
+    // point for the nose tip, widest point per height band for cheek/jaw,
+    // most-recessed point for the eye socket, etc.) rather than guessed —
+    // this mesh's own anatomy, not a hand-authored formula.
+    // Eye sockets are deliberately NOT in this list: a real eye socket is
+    // a recessed, dimmer landmark, not a bright one (the old procedural
+    // faceRelief agreed — eyeMask was always subtracted, never added).
+    // Listing them as a brighten-salience landmark was tried and produced
+    // two solid saturated-white ovals where the eyes should be (additive
+    // luminous particles piling up on a small screen-space area) — the
+    // single worst readability failure in an early pass of this system.
+    landmarks: {
+      browR: [0.021, 0.329, 0.139], browL: [-0.021, 0.329, 0.139],
+      noseBridge: [0, 0.295, 0.125], noseTip: [0, 0.266, 0.160],
+      cheekR: [0.100, 0.289, 0.007], cheekL: [-0.100, 0.289, 0.007],
+      mouth: [0, 0.1875, 0.1275],
+      jawR: [0.109, 0.131, -0.035], jawL: [-0.109, 0.131, -0.035],
+      chin: [0, 0.1785, 0.0965],
+    },
+    // Gaussian falloff radius for landmark proximity (mesh-space units,
+    // pre-scale) and how strongly it biases the salience population's
+    // rejection sampling / brightness. Kept tight — a wide radius lets
+    // neighboring landmarks' gaussians sum together into one big bright
+    // patch instead of distinct accents (also found the hard way).
+    landmarkRadius: 0.032,
+    // How far peripheral/aura samples get pushed outward along the local
+    // surface normal, in head-local units (post-scale) — a loose shell
+    // just outside the strict surface, not sitting on it.
+    auraPush: [0.02, 0.11],
+    // Population split of the combined old head+face particle budget
+    // (counts.head + counts.face) across the three explicitly distinct
+    // mesh-derived populations. Must sum to 1.
+    structuralFraction: 0.78,
+    salienceFraction: 0.06,
+    peripheralFraction: 0.16,
+  },
+
   // ---- Analytic body-part volumes (ellipsoid semi-axes + center) ------
+  // Head/face no longer live here — see CONFIG.HEAD_MESH above; that
+  // geometry now comes from the real head mesh, not an analytic shape.
   FIELD: {
-    // Narrower + taller + deeper than before — a sphere-ish width/height
-    // ratio is exactly what made the head read as a round blob.
-    head: { radii: [0.56, 0.72, 0.62], center: [0, 0.6, 0] },
-    // The face is a displacement-mapped relief now (see humanoidField.js
-    // faceRelief/faceWidthLimit), not a flat oval patch: width/height span
-    // the face plane, center is its base plane position (headShape's own
-    // front-plane recess sits just behind this), reliefScale is how far
-    // the brow/nose/cheek/chin landmarks are allowed to push forward from
-    // that base plane.
-    face: { width: 0.4, height: 0.34, center: [0, 0.64, 0.5], reliefScale: 0.34 },
     // widthRatio/depthRatio give the neck an elliptical (not circular)
     // cross-section — wider side-to-side than front-to-back, like a real
     // neck rather than a tube.

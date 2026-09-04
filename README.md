@@ -4,10 +4,12 @@ A fullscreen, realtime generative artwork: a humanoid bust made entirely of
 GPU-driven particles, alive with coherent-noise motion, that turns its
 attention toward the pointer and breathes/flows with whatever the
 microphone hears. Built with **p5.js** (WEBGL renderer) for a Generative
-Art university assignment. No mesh, no shell, no images — every pixel of
-the figure is a particle, positioned by an analytic density field and
-animated by hand-written GLSL shaders driven directly through p5's raw
-WebGL context.
+Art university assignment. No mesh, no shell, no images are ever drawn —
+every pixel of the figure is a particle. The head's particle positions are
+sampled from a real human head mesh (`assets/head-mesh.json`, see "Head
+geometry" below) purely as an invisible geometric guide; the rest of the
+body is positioned by an analytic density field; everything is animated by
+hand-written GLSL shaders driven directly through p5's raw WebGL context.
 
 ## Run it
 
@@ -51,24 +53,79 @@ No build step, no bundler, no `npm install` required to run — `p5.js`,
 | --- | --- |
 | `index.html` | Loads the vendored libraries and project scripts, in order. |
 | `style.css` | Fullscreen canvas, activation-screen overlay, debug panel styling, the CSS radial-gradient atmospheric backdrop behind the (alpha-transparent) WebGL canvas. |
-| `config.js` | Every tunable constant: quality presets, palette, camera, skeleton proportions, body-part field shapes, particle sizing, audio-reactivity scales, idle motion, and the pointer-attention dynamics. |
+| `config.js` | Every tunable constant: quality presets, palette, camera, skeleton proportions, body-part field shapes, the head mesh's transform/sampling constants (`CONFIG.HEAD_MESH`), particle sizing, audio-reactivity scales, idle motion, and the pointer-attention dynamics. |
 | `attention.js` | The pointer-attention system: `SecondOrderDynamics` (a critically/under-damped spring filter), `PointerTracker` (raw pointer state + return-to-center-on-leave), and `AttentionController` (the face → head → neck → shoulders → torso cascade). Framework-agnostic plain JS. |
 | `audio.js` | `AudioAnalyzer` — wraps `p5.AudioIn` + `p5.FFT`, started from the activation button's click (required by browser autoplay/mic policy), exposing smoothed `amplitude`/`bass`/`mid`/`treble`. |
-| `humanoidField.js` | No mesh is ever built. This module decides *where particles are allowed to exist*: analytic ellipsoid volumes for head/face/neck/shoulders, shaped by direction-dependent radius functions (`headShape`, `shoulderShape`) that sculpt cranium, temples, jaw, clavicles, etc. purely through particle placement. |
+| `humanoidField.js` | No mesh is ever *rendered*. This module decides *where particles are allowed to exist*: the head/face come from real mesh surface samples (see `headMesh.js`), neck/shoulders from analytic ellipsoid volumes shaped by direction-dependent radius functions (`shoulderShape`) that sculpt clavicles, deltoids, trapezius, etc. purely through particle placement. |
+| `headMesh.js` | Turns `assets/head-mesh.json` (a real scanned/sculpted human head — positions + triangle indices only) into particle sample data: area-weighted triangle surface sampling, landmark-biased salience weighting, and three explicit particle populations (structural/salience/peripheral). See "Head geometry" below. |
+| `assets/head-mesh.json` | The real head mesh's raw vertex positions and triangle indices (no materials/UVs/normals — those aren't needed since the mesh is never rendered), in its own coordinate space. `CONFIG.HEAD_MESH` holds the transform into this project's particle space. |
 | `particleSystem.js` | The GPU renderer. Compiles its own vertex/fragment shader programs and issues raw `gl.drawArrays(POINTS, …)` calls through p5's WEBGL context (`p.drawingContext`) — no per-particle JS objects or `ellipse()` calls. Contains the coherent-noise (simplex) flow field, the 3-bone shoulder→neck→head rigid skinning (via `gl-matrix`), audio-uniform wiring, and the adaptive-quality buffer rebuild. |
-| `sketch.js` | p5 entry point: `setup()`/`draw()`, pointer/activation DOM wiring, the one-way adaptive-quality downgrade loop, and the debug overlay. |
+| `sketch.js` | p5 entry point: `preload()` (loads the head mesh JSON), `setup()`/`draw()`, pointer/activation DOM wiring, the one-way adaptive-quality downgrade loop, and the debug overlay. |
 | `lib/` | Vendored `p5.min.js`, `p5.sound.min.js`, `gl-matrix-min.js`. |
+
+### Head geometry: a real mesh, sampled into particles
+
+The head is not a hand-authored formula — its particle positions are
+sampled from `assets/head-mesh.json`, a real human head mesh (positions +
+triangle indices only). **The mesh itself is never drawn**: there is no
+mesh renderer anywhere in this project, no solid shading, no wireframe, no
+textured face. It exists purely as an invisible geometric guide that
+`headMesh.js` turns into particle sample data, once, at load time — the
+exact same job `humanoidField.js`'s analytic shape functions do for the
+neck and shoulders, just sourced from real anatomy instead of a formula.
+
+- **Area-weighted surface sampling** (`pickHeadMeshTriangle` /
+  `sampleHeadMeshTriangle`): each triangle's contribution to the sampling
+  distribution is proportional to its own area, not its vertex count — raw
+  OBJ vertex density follows the source mesh's own retopology, not
+  anatomical importance, so sampling vertices directly would silently
+  over-represent whatever region happened to be triangulated densest.
+  Points are placed uniformly within the chosen triangle via barycentric
+  coordinates.
+- **Three explicitly distinct particle populations** (`sampleHeadMeshPoints`,
+  `CONFIG.HEAD_MESH.*Fraction`), all built from the *same* underlying
+  mesh sample:
+  | Population | Role |
+  | --- | --- |
+  | **structural** | Direct area-weighted surface samples — the bulk, carries facial readability. |
+  | **salience** | Rejection-sampled toward a set of anatomical landmarks (brow, nose bridge/tip, cheekbones, mouth, jaw, chin — found by querying the mesh's own vertex data for real local extrema, not guessed), forced into the luminous layer as an explicit brighter/larger accent. |
+  | **peripheral** | Surface samples pushed outward along the local triangle normal into a loose shell, tagged so they land in the existing halo/aura layer. |
+
+  These feed the exact same `writeParticle` → `splitByLayer` →
+  per-population-blend-mode pipeline described above — the rendering
+  architecture didn't change, only where the head's points come from.
+- **Eye sockets are deliberately excluded from the salience landmark set.**
+  An early version listed them as a "brighten" landmark like the others;
+  under additive luminous blending that produced two solid saturated-white
+  ovals where the eyes should be — the single worst readability failure
+  while tuning this. A real eye socket is a recessed, *dimmer* landmark
+  (the old procedural `faceRelief` agreed: it always subtracted there,
+  never added) — leaving it out of the brighten set instead of trying to
+  fight the additive blend into submission fixed it outright.
+- **Neck integration, not a hard seam:** `CONFIG.HEAD_MESH.fadeLowY`/
+  `fadeHighY` fade the mesh's own per-triangle sampling weight to zero
+  below the mesh's shirt-collar/bust base and ramp it in through the
+  jaw/neck transition, so the OBJ-derived jaw/neck stub feathers into the
+  existing procedural neck/shoulders (`sampleNeck`/`shoulderShape`,
+  unchanged) instead of a visible geometric cut.
+- **Transform** (`CONFIG.HEAD_MESH.scale`/`offsetX`/`offsetY`/`offsetZ`):
+  one uniform scale (never a per-axis stretch — the entire point of using
+  a real mesh is real proportions) plus a translation calibrated so the
+  mesh's own neck-narrowest point lands just above the rigid head pivot
+  (`particleSystem.js`'s `Pivots`), inside the existing neck sampler's own
+  upward overlap reach.
 
 ### Particle architecture
 
-The humanoid is **never** a mesh. `humanoidField.js` samples particle
-positions directly from analytic volumes (ellipsoids for head, face, neck,
-shoulders), each with its own direction-dependent shape function that
-adds/subtracts radius to sculpt anatomical landmarks (crown, temple, brow,
-cheek, jaw, deltoid, clavicle) — a form built entirely out of *where dust
+The humanoid is **never** a rendered mesh. The head/face particle
+positions come from area-weighted surface sampling of a real head mesh
+(`headMesh.js`, see "Head geometry" above); the neck and shoulders sample
+analytic ellipsoid volumes, each with its own direction-dependent shape
+function that adds/subtracts radius to sculpt anatomical landmarks
+(clavicle, deltoid, trapezius) — a form built entirely out of *where dust
 is allowed to settle*. Each part also gets a sparse, slightly displaced
-"halo" fraction so the silhouette reads as soft volumetric matter rather
-than a crisp cutout.
+"halo"/peripheral fraction so the silhouette reads as soft volumetric
+matter rather than a crisp cutout.
 
 At render time, `particleSystem.js` uploads these positions as static GL
 buffers once per quality tier, then does all *motion* on the GPU: each
@@ -170,7 +227,11 @@ consecutive seconds of sustained low FPS, with a cooldown between steps.
 Counts were trimmed from an earlier pass on purpose: rendering quality now
 comes from the layered particle shader and bloom pipeline above, not from
 raw density — a smaller, better-rendered population reads richer than a
-larger flat one.
+larger flat one. The Head/Face columns below are the combined budget
+handed to the head mesh sampler (`CONFIG.HEAD_MESH.*Fraction` then splits
+it across the structural/salience/peripheral populations) — the numbers
+themselves are unchanged from the earlier procedural head/face system,
+only their source is different now.
 
 | Tier | Head | Face | Neck | Shoulders | Aura | Far | Fog | Foreground | Total |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |

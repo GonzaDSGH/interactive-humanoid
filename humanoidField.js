@@ -32,190 +32,14 @@ function clamp01(x) {
 }
 
 // ---------------------------------------------------------------------
-// CRANIUM — frontal bone / cranial vault / temporal region / occipital.
-// The face's own landmarks (brow, eyes, nose, cheeks, mouth, jaw contour)
-// are NOT sculpted here — see faceRelief() — because a spherical radius
-// multiplier averaged over solid angle cannot place a feature precisely
-// enough to read as a face; it can only ever read as a lumpy ball. This
-// function's job is the skull silhouette only: a rounder, fuller
-// occipital back, a distinct temporal region, and a flattened, RECESSED
-// frontal/facial plane that gets out of the way so faceRelief's own
-// protrusions (the nose especially) are what the viewer sees.
+// HEAD — real anatomical geometry, sampled from a scanned/sculpted human
+// head mesh rather than an analytic formula. See headMesh.js: the mesh
+// (assets/head-mesh.json) is loaded once, and its surface is turned into
+// three explicitly distinct particle populations (structural/salience/
+// peripheral, via sampleHeadMeshPoints) that plug into the exact same
+// writeParticle -> layer-split -> per-population blend-mode pipeline the
+// old procedural head/face used. The mesh itself is never rendered.
 // ---------------------------------------------------------------------
-function headShape(nx, ny, nz) {
-  let r = 1.0;
-
-  // Cranial vault: flattens toward the crown rather than a perfect dome.
-  const crownFlatten = smoothstep(0.6, 1.0, ny);
-  r -= 0.16 * crownFlatten;
-
-  // Occipital bulge — the back of the skull stays fuller/rounder than the
-  // front, which is what makes the head read as front-to-back asymmetric
-  // (a real head) instead of a uniform ball.
-  const craniumHeight = smoothstep(-0.05, 0.5, ny) * (1 - smoothstep(0.7, 0.98, ny));
-  const craniumBack = smoothstep(0.15, -0.7, nz);
-  r += 0.24 * craniumHeight * craniumBack;
-
-  // Temporal region — the transition band at ear/temple height.
-  const templeBand = gaussianMask(ny, 0.02, 0.24);
-  const sideness = smoothstep(0.2, 0.65, Math.abs(nx));
-  r += 0.15 * templeBand * sideness;
-
-  // Frontal/facial plane recess — the "canvas" faceRelief paints onto.
-  // Kept modest: too deep a cut hollows out the whole front of the skull
-  // (barely any skull particles land in the visible front silhouette)
-  // rather than just making room for the nose/brow/chin to read as
-  // protruding above a still-solid base.
-  const facePlaneFront = smoothstep(0.12, 0.55, nz);
-  const facePlaneHeight = 1 - smoothstep(0.15, 0.75, Math.abs(ny - 0.0));
-  r -= 0.13 * facePlaneFront * facePlaneHeight;
-
-  // Mandibular region / jaw taper (the skull's own contribution — the
-  // face relief adds a second, sharper mandible contour on top of this).
-  const jawMask = smoothstep(0.2, -0.78, ny) * smoothstep(-0.15, 0.5, nz);
-  r -= 0.32 * jawMask;
-
-  const sideJaw = smoothstep(0.12, -0.7, ny);
-  r -= 0.12 * sideJaw * (1 - jawMask * 0.5);
-
-  const poleMask = smoothstep(-0.4, -0.98, ny);
-  r -= 0.22 * poleMask;
-
-  return Math.max(0.32, r);
-}
-
-/** Density salience for the skull: landmark transitions (temporal band,
- *  jaw edge, the seam between the recessed facial plane and the fuller
- *  occipital mass, the crown edge) get more particles than the smooth
- *  filler volume between them. Returned in roughly [1, 2.9]. */
-function headSalience(nx, ny, nz) {
-  const templeBand = gaussianMask(ny, 0.02, 0.22) * smoothstep(0.2, 0.65, Math.abs(nx));
-  const jawEdge = gaussianMask(ny, -0.45, 0.2) * smoothstep(-0.1, 0.5, nz);
-  return 1 + 0.4 * templeBand + 0.45 * jawEdge;
-}
-const HEAD_MAX_SALIENCE = 1.9;
-
-// ---------------------------------------------------------------------
-// FACE — a proper displacement field over (u, v) face-plane coordinates,
-// not a radius multiplier: brow, orbital cavities, nasal bridge/tip,
-// zygomatic arches, infraorbital/cheek plane, philtrum, mouth plane,
-// mandibular contour and chin are each placed at an explicit (u, v)
-// location with an explicit sign (additive protrusion or subtractive
-// depression) — the only way to get precise, recognizably-human
-// placement out of a particle scatter. v: 1 = forehead top, -1 = chin.
-// ---------------------------------------------------------------------
-
-/**
- * Face silhouette taper as seen from the front. The zygomatic arches
- * (cheekbones) are the face's widest point — wider than the forehead,
- * which narrows again down through the jaw to the chin. A monotonic
- * top-to-bottom taper (an earlier version of this file) put the widest
- * point at the forehead, which reads anatomically wrong.
- */
-function faceWidthLimit(v) {
-  if (v > -0.03) {
-    const t = smoothstep(0.85, -0.03, v);
-    return lerp(0.8, 1.0, t);
-  }
-  const t = smoothstep(-0.03, -0.92, v);
-  return lerp(1.0, 0.32, t);
-}
-
-/**
- * Returns { z: forward displacement (face-local units), feature: signed
- * "how strong a landmark is this point on" }. `feature` drives both the
- * implicit shading cue (ridges brighter, sockets dimmer — this unlit
- * renderer has no lighting model) and the face's own density salience
- * (sampleFace importance-samples toward high |feature|).
- */
-function faceRelief(u, v) {
-  let z = 0;
-  let feature = 0;
-
-  const dome = Math.sqrt(Math.max(0, 1 - u * u * 0.85 - v * v * 0.3));
-  z += 0.5 * dome;
-
-  // Frontal bone / forehead plane.
-  const foreheadMask = gaussianMask(v, 0.58, 0.3);
-  z += 0.035 * foreheadMask;
-
-  // Supraorbital ridge (brow) — two separate bumps, one per eye, rather
-  // than one bar spanning the full width: a continuous bar reads as a
-  // single hard line once sparsely sampled, while two softer, localized
-  // bumps read as "brow ridge above each eye" and integrate with the
-  // orbital cavities directly beneath them.
-  const browL = gaussianMask(u, -0.32, 0.19) * gaussianMask(v, 0.24, 0.08);
-  const browR = gaussianMask(u, 0.32, 0.19) * gaussianMask(v, 0.24, 0.08);
-  const browMask = browL + browR;
-  z += 0.055 * browMask;
-  feature += 0.3 * browMask;
-
-  // Orbital cavities (eye sockets) — the strongest depth cue on the face.
-  const eyeL = gaussianMask(u, -0.36, 0.15) * gaussianMask(v, 0.12, 0.1);
-  const eyeR = gaussianMask(u, 0.36, 0.15) * gaussianMask(v, 0.12, 0.1);
-  const eyeMask = eyeL + eyeR;
-  z -= 0.19 * eyeMask;
-  feature -= 0.75 * eyeMask;
-
-  // Nasal bridge / dorsum + tip. NOTE: gaussianMask(u, 0, width) is
-  // exactly 1 whenever u===0 REGARDLESS of width — width only controls
-  // fall-off away from center. That means noseRun alone controls the
-  // ridge's vertical extent; it must stay tightly confined to the actual
-  // bridge-to-tip span or the ridge reads as a seam running the full
-  // face height instead of a nose (found and fixed while tuning this).
-  const noseWidth = lerp(0.04, 0.1, smoothstep(0.06, -0.14, v));
-  const noseRun = smoothstep(-0.52, -0.32, v) * (1 - smoothstep(0.02, 0.17, v));
-  const noseMask = gaussianMask(u, 0, noseWidth) * noseRun;
-  const noseTip = gaussianMask(v, -0.08, 0.075);
-  z += 0.24 * noseMask * (0.5 + 0.85 * noseTip);
-  feature += 0.9 * noseMask * (0.35 + noseTip);
-
-  // Zygomatic arches (cheekbones) — higher and more lateral than the
-  // infraorbital/cheek plane beneath them; the face's structural corners.
-  // Zygomatic arches, infraorbital/cheek plane, mandibular contour and
-  // the mental protuberance all stay deliberately subtle relative to the
-  // brow/orbital/nasal cluster above: an earlier pass gave them magnitude
-  // and feature-weight on par with the eyes/nose, and it diluted the
-  // signal that was actually making the face read as a face — spreading
-  // the importance-sampling density budget over many medium landmarks
-  // instead of concentrating it on the few that matter most for instant
-  // recognition. These add real structure without competing for it.
-  const zygoL = gaussianMask(u, -0.5, 0.11) * gaussianMask(v, 0.02, 0.1);
-  const zygoR = gaussianMask(u, 0.5, 0.11) * gaussianMask(v, 0.02, 0.1);
-  const zygoMask = zygoL + zygoR;
-  z += 0.05 * zygoMask;
-  feature += 0.18 * zygoMask;
-
-  const cheekL = gaussianMask(u, -0.4, 0.17) * gaussianMask(v, -0.13, 0.16);
-  const cheekR = gaussianMask(u, 0.4, 0.17) * gaussianMask(v, -0.13, 0.16);
-  const cheekMask = cheekL + cheekR;
-  z += 0.04 * cheekMask;
-  feature += 0.1 * cheekMask;
-
-  const philtrum = gaussianMask(u, 0, 0.04) * gaussianMask(v, -0.29, 0.07);
-  z -= 0.028 * philtrum;
-
-  const mouthMask = gaussianMask(v, -0.4, 0.065) * (1 - smoothstep(0.24, 0.42, Math.abs(u)));
-  z += 0.026 * mouthMask;
-  feature += 0.16 * mouthMask;
-
-  const wLimitHere = faceWidthLimit(v);
-  const edgeProximity = smoothstep(0.6, 0.94, Math.abs(u) / Math.max(0.001, wLimitHere));
-  const jawlineRun = gaussianMask(v, -0.55, 0.28) * (1 - smoothstep(0.05, 0.35, v));
-  const mandibleMask = edgeProximity * jawlineRun;
-  z += 0.032 * mandibleMask;
-  feature += 0.16 * mandibleMask;
-
-  const chinMask = gaussianMask(v, -0.74, 0.13) * (1 - smoothstep(0.2, 0.4, Math.abs(u)));
-  z += 0.08 * chinMask;
-  feature += 0.32 * chinMask;
-
-  const mentalMask = gaussianMask(u, 0, 0.09) * gaussianMask(v, -0.8, 0.075);
-  z += 0.025 * mentalMask;
-  feature += 0.16 * mentalMask;
-
-  return { z, feature };
-}
 
 // ---------------------------------------------------------------------
 // NECK — elliptical, anatomically directional column: anterior mass with
@@ -505,101 +329,37 @@ function sampleEllipsoidPart(buf, start, count, part, isFace, radii, center, sha
 }
 
 /**
- * Samples the face as a displacement-mapped relief (see faceRelief/
- * faceWidthLimit above), importance-sampled toward high |feature| so
- * particle DENSITY itself — not just brightness — concentrates at
- * landmarks (brow, orbital rim, nasal bridge, cheekbones, jaw contour,
- * chin) rather than being spread uniformly over the face's area.
- *
- * Sampled in mirrored (u, -u) pairs rather than independently at random:
- * a real face reads as symmetric, and independent left/right random
- * draws — even from the same distribution — reliably produce a visibly
- * lopsided result (confirmed while tuning this: identical settings, two
- * different random seeds, two noticeably different-looking faces). One
- * (u>=0, v) sample and its relief are computed once per pair and placed
- * at both +u and -u; only the per-particle sparkle (size/brightness/
- * seed) is still independently randomized per side, so it stays organic
- * rather than perfectly identical either side.
- */
-function sampleFace(buf, start, count, field) {
-  const pf = CONFIG.PARTICLE_FIELD;
-  const haloCount = Math.floor(count * pf.haloFraction);
-  const coreCount = count - haloCount;
-  const pairCount = Math.ceil(count / 2);
-  // Squared rather than linear: the orbital/nasal cluster (the strongest
-  // |feature| values by design) gets a strong, clear density lead, while
-  // the smaller supporting landmarks (zygomatic, mandible, mouth, chin)
-  // get a gentle lift rather than competing with them for density.
-  const maxWeight = 2.15;
-
-  for (let p = 0; p < pairCount; p++) {
-    const k0 = p * 2;
-    const k1 = k0 + 1;
-
-    let uAbs = 0;
-    let v = 0;
-    let wLimit = 1;
-    let relief = null;
-    let tries = 0;
-    do {
-      uAbs = Math.random();
-      v = Math.random() * 2 - 1;
-      wLimit = faceWidthLimit(v);
-      tries++;
-      if (uAbs > wLimit || v * v * 1.05 + uAbs * uAbs * 0.4 > 1.08) {
-        relief = null;
-        continue;
-      }
-      relief = faceRelief(uAbs, v);
-      const weight = 1 + Math.min(1.1, relief.feature * relief.feature * 1.8);
-      if (tries >= 45 || Math.random() * maxWeight <= weight) break;
-    } while (true);
-    if (!relief) relief = faceRelief(uAbs, v);
-
-    const { z: reliefZ, feature } = relief;
-    const y = field.center[1] + v * field.height;
-    const edgeBase = (uAbs / Math.max(0.001, wLimit)) * 0.5;
-
-    for (let side = 0; side < 2; side++) {
-      const k = side === 0 ? k0 : k1;
-      if (k >= count) break;
-      const isHalo = k >= coreCount;
-      const haloPush = isHalo ? haloFractionSample(pf.haloDepth) - 1 : 0;
-      const signedU = side === 0 ? uAbs : -uAbs;
-
-      const x = field.center[0] + signedU * field.width;
-      const z = field.center[2] + reliefZ * field.reliefScale + haloPush * 0.12;
-      const edgeAmount = isHalo ? 1 + haloPush : edgeBase;
-
-      writeParticle(
-        buf, start + k, x, y, z, PART.HEAD, true, edgeAmount,
-        pf.facePointSizeRange, pf.faceBrightnessRange, feature
-      );
-    }
-  }
-}
-
-/**
  * Builds the entire humanoid particle field for a given quality preset's
  * counts. Positions are local to each part's own pivot frame (shoulder /
  * neck / head) so the renderer can skin them to that part's rigid world
  * matrix every frame.
+ *
+ * The old procedural head+face budget (counts.head + counts.face) is now
+ * spent on the real head mesh instead (see headMesh.js), split across its
+ * three explicitly distinct populations per CONFIG.HEAD_MESH's fractions —
+ * the mesh must already be loaded and initHeadMesh()'d before this runs
+ * (see sketch.js preload()/setup()).
  */
 function buildHumanoidField(counts) {
   const pf = CONFIG.PARTICLE_FIELD;
-  const total = counts.head + counts.face + counts.neck + counts.shoulder;
+  const HM = CONFIG.HEAD_MESH;
+  const headBudget = counts.head + counts.face;
+  const structCount = Math.round(headBudget * HM.structuralFraction);
+  const salienceCount = Math.round(headBudget * HM.salienceFraction);
+  const peripheralCount = headBudget - structCount - salienceCount;
+
+  const total = headBudget + counts.neck + counts.shoulder;
   const buf = allocate(total);
   let offset = 0;
 
-  sampleEllipsoidPart(
-    buf, offset, counts.head, PART.HEAD, false,
-    CONFIG.FIELD.head.radii, CONFIG.FIELD.head.center, headShape,
-    pf.pointSizeRange, pf.brightnessRange, headSalience, HEAD_MAX_SALIENCE
-  );
-  offset += counts.head;
+  sampleHeadMeshPoints(buf, offset, structCount, 'structural');
+  offset += structCount;
 
-  sampleFace(buf, offset, counts.face, CONFIG.FIELD.face);
-  offset += counts.face;
+  sampleHeadMeshPoints(buf, offset, salienceCount, 'salience');
+  offset += salienceCount;
+
+  sampleHeadMeshPoints(buf, offset, peripheralCount, 'peripheral');
+  offset += peripheralCount;
 
   sampleNeck(buf, offset, counts.neck, CONFIG.SKELETON.neckHeight);
   offset += counts.neck;

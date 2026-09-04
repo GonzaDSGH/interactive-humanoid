@@ -14,6 +14,15 @@ let qualityIndex = 0; // index into CONFIG.QUALITY_ORDER — starts at ULTRA
 let debugMode = false;
 let debugEl = null;
 let audioStarted = false;
+let headMeshRaw = null;
+
+// p5 blocks setup() until this resolves — the real head mesh (positions +
+// triangle indices only, see assets/head-mesh.json / headMesh.js) must be
+// on hand before buildHumanoidField() ever runs, since it's now the
+// primary source of head geometry rather than a fallback.
+function preload() {
+  headMeshRaw = loadJSON(CONFIG.HEAD_MESH.url);
+}
 
 // Adaptive quality bookkeeping.
 let lastAdaptiveCheck = 0;
@@ -45,6 +54,8 @@ function setup() {
     debugMode = new URLSearchParams(window.location.search).get('debug') === '1';
     debugEl = document.getElementById('debug');
     if (debugMode && debugEl) debugEl.hidden = false;
+
+    initHeadMesh(headMeshRaw);
 
     pointer = new PointerTracker();
     attention = new AttentionController(pointer);
