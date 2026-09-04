@@ -611,7 +611,46 @@ function buildHumanoidField(counts) {
   );
   offset += counts.shoulder;
 
-  return buf;
+  return splitByLayer(buf);
+}
+
+/**
+ * Buckets the combined buffer into three genuinely separate buffers, one
+ * per visual layer (structural/luminous/peripheral). This is what lets
+ * particleSystem.js give each population its own GL blend mode via a
+ * separate draw call — additive blending applied to the whole humanoid
+ * (including the dense structural bulk) is what let overlapping particles
+ * at anatomical landmarks stack straight to saturated white; each
+ * population needs its own compositing, not just its own shading.
+ */
+function splitByLayer(buf) {
+  const counts = [0, 0, 0];
+  for (let i = 0; i < buf.count; i++) counts[buf.layer[i]]++;
+
+  const buckets = counts.map(allocate);
+  const cursors = [0, 0, 0];
+
+  for (let i = 0; i < buf.count; i++) {
+    const layer = buf.layer[i];
+    const dst = buckets[layer];
+    const j = cursors[layer]++;
+
+    dst.positions[j * 3] = buf.positions[i * 3];
+    dst.positions[j * 3 + 1] = buf.positions[i * 3 + 1];
+    dst.positions[j * 3 + 2] = buf.positions[i * 3 + 2];
+    dst.part[j] = buf.part[i];
+    dst.face[j] = buf.face[i];
+    dst.size[j] = buf.size[i];
+    dst.brightness[j] = buf.brightness[i];
+    dst.random[j] = buf.random[i];
+    dst.seed[j * 3] = buf.seed[i * 3];
+    dst.seed[j * 3 + 1] = buf.seed[i * 3 + 1];
+    dst.seed[j * 3 + 2] = buf.seed[i * 3 + 2];
+    dst.edge[j] = buf.edge[i];
+    dst.layer[j] = layer;
+  }
+
+  return { structural: buckets[0], luminous: buckets[1], peripheral: buckets[2] };
 }
 
 function allocateEnv(count) {

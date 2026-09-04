@@ -167,7 +167,8 @@ function checkAdaptiveQuality(nowMs) {
 function updateDebugPanel(pose) {
   if (!debugMode || !debugEl) return;
   const envTotal = Object.values(particleSystem.envCounts || {}).reduce((sum, n) => sum + n, 0);
-  const totalParticles = (particleSystem.humanoidCount || 0) + envTotal;
+  const humanoidTotal = Object.values(particleSystem.humanoidLayers || {}).reduce((sum, l) => sum + l.count, 0);
+  const totalParticles = humanoidTotal + envTotal;
   debugEl.textContent = [
     `fps         ${frameRate().toFixed(0)}`,
     `quality     ${CONFIG.QUALITY_ORDER[qualityIndex]}`,

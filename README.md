@@ -101,6 +101,27 @@ a per-particle blend between a tight bright core and a wide soft Gaussian
 glow (its `softness`), with an explicit circular cutoff so the point
 sprite's square bounding box never shows.
 
+**Each population is also a separate draw call with its own GL blend
+mode** — `humanoidField.js`'s `splitByLayer` buckets the generated
+particles into three genuinely separate buffers so this is possible.
+Every shader outputs premultiplied color (`color * alpha, alpha`), which
+is what lets the same output work correctly under two different
+compositing modes: structural and peripheral use soft, bounded
+"over"-style alpha (`gl.blendFunc(ONE, ONE_MINUS_SRC_ALPHA)`) so dense
+overlap at anatomical landmarks caps at opaque instead of accumulating;
+luminous uses true additive (`gl.blendFunc(ONE, ONE)`) for its sparkle
+accents. Environment layers (far/fog/aura/foreground) use the same soft
+alpha mode — atmosphere, not an accumulating glow.
+
+Two other cues shape the humanoid shader beyond size/brightness/softness:
+a **camera-space depth luminance curve** (`uDepthLumRange`/
+`uDepthLumStrength`, `CONFIG.DEPTH_LUMINANCE`) — an eased, non-linear
+falloff centered on the camera's own focal distance, not a flat linear
+fade — and **motion-render coupling**: peripheral/luminous sprites grow
+subtly under fast pointer movement (`uPointerSpeed` × each layer's
+`motionSizeResponse`) while structural stays completely stable, since
+anatomy must never wobble.
+
 The scene then renders into an offscreen framebuffer and goes through a
 real multi-pass bloom before reaching the canvas: bright-pass (luminance
 threshold + soft knee) → two independent blur scales (a tight, sharp glow
@@ -109,15 +130,17 @@ blur passes, `CONFIG.BLOOM`) → composite with a Reinhard-style tonemap. If
 framebuffer creation fails on an unusual GL implementation, it falls back
 to rendering directly to the canvas rather than crashing.
 
-Tuning this taught a real lesson worth recording: the first pass had
-`structural` particles bright enough, combined with dense importance-
-sampled overlap at landmarks (the nose ridge especially), to already
-saturate to white *before* bloom was even applied — bloom then piled a
-glow on top of an already-blown-out patch, engulfing the exact facial
-detail the layering was supposed to make more readable. Fixed by pulling
-back structural brightness/size, softening the core falloff so dense
-overlap saturates less aggressively, and raising the bloom threshold so it
-catches genuine luminous-layer accents rather than general dense overlap.
+Tuning this taught a real lesson worth recording: an earlier pass gave
+every population the same additive blend mode for the whole humanoid,
+including the dense structural bulk — overlapping particles at
+anatomical landmarks (the nose ridge especially, from importance
+sampling) stacked straight to saturated white before bloom even applied,
+and the only lever available at the time was dimming structural
+brightness/size to compensate, which dulled the whole figure along with
+it. The real fix was architectural, not a tuning number: give structural
+its own bounded, non-additive blend mode so overlap literally cannot
+accumulate past opaque, then bloom only needs to catch genuine luminous
+accents rather than general dense overlap.
 
 ### Environment: four cooperating particle layers
 

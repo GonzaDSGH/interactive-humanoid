@@ -97,6 +97,16 @@ const PARTICLE_CORE_GLSL = `
   }
 `;
 
+// One humanoid population per draw call now (structural / luminous /
+// peripheral — see humanoidField.js splitByLayer), each with its own
+// buffers, its own uSizeMul/uBrightMul/uSoftness/uHighlightMix uniforms,
+// AND — critically — its own GL blend mode set by the caller
+// (ParticleSystem._drawHumanoidLayer): structural and peripheral use soft
+// (premultiplied) alpha compositing, luminous uses additive. One uniform
+// particle used to mean one blend mode had to serve the whole figure;
+// additive blending applied to the dense structural bulk is what let
+// overlapping particles at anatomical landmarks (the nose ridge
+// especially) stack straight to saturated white.
 const HUMANOID_VERT = `
   attribute vec3 aPosition;
   attribute float aPart;
@@ -106,7 +116,6 @@ const HUMANOID_VERT = `
   attribute float aRandom;
   attribute vec3 aSeed;
   attribute float aEdge;
-  attribute float aLayer;
 
   uniform mat4 uProjectionMatrix;
   uniform mat4 uViewMatrix;
@@ -128,17 +137,25 @@ const HUMANOID_VERT = `
   uniform float uFlowShoulder;
   uniform float uFlowNeck;
   uniform float uFlowHead;
-  // .x = structural, .y = luminous, .z = peripheral — see humanoidField.js
-  // LAYER_STRUCTURAL/LUMINOUS/PERIPHERAL and aLayer.
-  uniform vec3 uLayerSizeMul;
-  uniform vec3 uLayerBrightMul;
-  uniform vec3 uLayerSoftness;
+  uniform float uSizeMul;
+  uniform float uBrightMul;
+  uniform float uSoftnessVal;
+  // Motion-render coupling: pointer speed subtly grows this layer's
+  // sprites (peripheral/luminous) while structural stays stable — see
+  // uMotionSizeResponse (0 for structural).
+  uniform float uPointerSpeed;
+  uniform float uMotionSizeResponse;
+  // Camera-space depth luminance: an artistically-curved response (not a
+  // linear fade) — particles near the camera's focal distance read at
+  // full contrast, particles further from it dim gently either way.
+  uniform float uCameraDistance;
+  uniform float uDepthLumRange;
+  uniform float uDepthLumStrength;
 
   varying float vBrightness;
   varying float vEdge;
   varying float vRandom;
   varying float vSoftness;
-  varying float vLayer;
 
   ${NOISE_GLSL}
 
@@ -174,23 +191,20 @@ const HUMANOID_VERT = `
     vec4 viewPos = uViewMatrix * worldPos;
     gl_Position = uProjectionMatrix * viewPos;
 
-    float sizeMul, brightMul, softnessVal;
-    if (aLayer < 0.5) {
-      sizeMul = uLayerSizeMul.x; brightMul = uLayerBrightMul.x; softnessVal = uLayerSoftness.x;
-    } else if (aLayer < 1.5) {
-      sizeMul = uLayerSizeMul.y; brightMul = uLayerBrightMul.y; softnessVal = uLayerSoftness.y;
-    } else {
-      sizeMul = uLayerSizeMul.z; brightMul = uLayerBrightMul.z; softnessVal = uLayerSoftness.z;
-    }
+    float viewDepth = -viewPos.z;
+    float depthT = clamp(abs(viewDepth - uCameraDistance) / max(uDepthLumRange, 0.001), 0.0, 1.0);
+    // Eased (not linear) falloff either side of the focal distance.
+    float depthLum = 1.0 - pow(depthT, 1.6) * uDepthLumStrength;
 
-    float sizeAtten = 1.0 / max(-viewPos.z, 0.001);
-    gl_PointSize = aSize * uSizeScale * uPixelRatio * sizeAtten * sizeMul;
+    float motionSize = 1.0 + clamp(uPointerSpeed, 0.0, 3.0) * uMotionSizeResponse;
 
-    vBrightness = aBrightness * brightMul;
+    float sizeAtten = 1.0 / max(viewDepth, 0.001);
+    gl_PointSize = aSize * uSizeScale * uPixelRatio * sizeAtten * uSizeMul * motionSize;
+
+    vBrightness = aBrightness * uBrightMul * depthLum;
     vEdge = aEdge;
     vRandom = aRandom;
-    vSoftness = softnessVal;
-    vLayer = aLayer;
+    vSoftness = uSoftnessVal;
   }
 `;
 
@@ -200,11 +214,11 @@ const HUMANOID_FRAG = `
   varying float vEdge;
   varying float vRandom;
   varying float vSoftness;
-  varying float vLayer;
 
   uniform vec3 uColorPrimary;
   uniform vec3 uColorSecondary;
   uniform vec3 uColorHighlight;
+  uniform float uHighlightMix;
   uniform float uAudioTreble;
   uniform float uTrebleSparkleScale;
   uniform float uAudioEnergy;
@@ -220,16 +234,20 @@ const HUMANOID_FRAG = `
 
     vec3 color = mix(uColorSecondary, uColorPrimary, clamp(vRandom * 1.3, 0.0, 1.0));
     color = mix(color, uColorHighlight, clamp((vBrightness - 0.7) * 1.6, 0.0, 1.0) * step(0.7, vRandom));
-    // Luminous/peripheral layers lean toward the hot highlight color for a
-    // stronger "energy accent" read, distinct from the structural bulk.
-    color = mix(color, uColorHighlight, clamp(vLayer - 0.5, 0.0, 1.0) * 0.4);
+    // Luminous particles lean toward the hot highlight color for a
+    // stronger "energy accent" read, distinct from the structural bulk —
+    // set per draw call via uHighlightMix (0 for structural/peripheral).
+    color = mix(color, uColorHighlight, uHighlightMix);
 
     // Treble -> fine sparkle concentrated at the peripheral/edge particles.
     float sparkle = uAudioTreble * uTrebleSparkleScale * smoothstep(0.5, 1.3, vEdge) * step(0.6, vRandom);
 
     float energyLift = 1.0 + uAudioEnergy * uEnergyBrightnessScale;
-    float alpha = profile * vBrightness * edgeFade * energyLift + sparkle * profile;
-    gl_FragColor = vec4(color, clamp(alpha, 0.0, 1.0));
+    float alpha = clamp(profile * vBrightness * edgeFade * energyLift + sparkle * profile, 0.0, 1.0);
+    // Premultiplied output: works unchanged under either blend mode the
+    // caller sets — (ONE, ONE_MINUS_SRC_ALPHA) for soft alpha compositing,
+    // (ONE, ONE) for additive — see ParticleSystem._drawHumanoidLayer.
+    gl_FragColor = vec4(color * alpha, alpha);
   }
 `;
 
@@ -290,9 +308,12 @@ const ENV_FRAG = `
 
   void main() {
     float profile = particleProfile(gl_PointCoord, uSoftness);
-    float alpha = profile * vAlpha;
+    float alpha = clamp(profile * vAlpha, 0.0, 1.0);
     if (alpha < 0.004) discard;
-    gl_FragColor = vec4(uColor, alpha);
+    // Premultiplied, soft (non-additive) compositing — see CONFIG.ENVIRONMENT
+    // and ParticleSystem._drawEnvLayer's blend mode. Environment/aura dust
+    // reads as atmosphere it doesn't accumulate to a saturated glow.
+    gl_FragColor = vec4(uColor * alpha, alpha);
   }
 `;
 
@@ -635,20 +656,36 @@ class ParticleSystem {
     this._fboHeight = h;
   }
 
+/** Uploads one humanoid population's typed arrays (from
+   *  humanoidField.js's splitByLayer bucket) as GL buffers. */
+  _uploadHumanoidLayer(data) {
+    const gl = this.gl;
+    return {
+      count: data.count,
+      buffers: {
+        position: makeAttribBuffer(gl, data.positions),
+        part: makeAttribBuffer(gl, data.part),
+        face: makeAttribBuffer(gl, data.face),
+        size: makeAttribBuffer(gl, data.size),
+        brightness: makeAttribBuffer(gl, data.brightness),
+        random: makeAttribBuffer(gl, data.random),
+        seed: makeAttribBuffer(gl, data.seed),
+        edge: makeAttribBuffer(gl, data.edge),
+      },
+    };
+  }
+
   buildBuffers(counts) {
     const gl = this.gl;
+    // buildHumanoidField now returns three separate buckets (structural/
+    // luminous/peripheral — see humanoidField.js splitByLayer) rather than
+    // one combined buffer, so each population can get its own GL buffers
+    // and, at draw time, its own blend mode.
     const field = buildHumanoidField(counts);
-    this.humanoidCount = field.count;
-    this.humanoidBuffers = {
-      position: makeAttribBuffer(gl, field.positions),
-      part: makeAttribBuffer(gl, field.part),
-      face: makeAttribBuffer(gl, field.face),
-      size: makeAttribBuffer(gl, field.size),
-      brightness: makeAttribBuffer(gl, field.brightness),
-      random: makeAttribBuffer(gl, field.random),
-      seed: makeAttribBuffer(gl, field.seed),
-      edge: makeAttribBuffer(gl, field.edge),
-      layer: makeAttribBuffer(gl, field.layer),
+    this.humanoidLayers = {
+      structural: this._uploadHumanoidLayer(field.structural),
+      luminous: this._uploadHumanoidLayer(field.luminous),
+      peripheral: this._uploadHumanoidLayer(field.peripheral),
     };
 
     this.envBuffers = {};
@@ -669,7 +706,9 @@ class ParticleSystem {
    *  downgrade) without recreating shader programs or the GL context. */
   rebuild(counts) {
     const gl = this.gl;
-    for (const buf of Object.values(this.humanoidBuffers)) gl.deleteBuffer(buf);
+    for (const name of Object.keys(this.humanoidLayers)) {
+      for (const buf of Object.values(this.humanoidLayers[name].buffers)) gl.deleteBuffer(buf);
+    }
     for (const layer of ENV_LAYERS) {
       for (const buf of Object.values(this.envBuffers[layer.key])) gl.deleteBuffer(buf);
     }
@@ -726,7 +765,10 @@ class ParticleSystem {
 
   /** Draws one environment layer (far / fog / aura / foreground) — same
    *  program and buffer shape throughout, only CONFIG.ENVIRONMENT[key]'s
-   *  uniforms and the flow-velocity sensitivity differ. */
+   *  uniforms and the flow-velocity sensitivity differ. Always soft
+   *  (premultiplied) alpha compositing — see the blendFunc set by the
+   *  caller before this runs — never additive: environment/aura dust is
+   *  atmosphere, not an accumulating glow. */
   _drawEnvLayer(key, flowScale) {
     const gl = this.gl;
     const E = CONFIG.ENVIRONMENT[key];
@@ -752,26 +794,74 @@ class ParticleSystem {
     gl.drawArrays(gl.POINTS, 0, this.envCounts[key]);
   }
 
+  /** Draws one humanoid population (structural / luminous / peripheral —
+   *  see humanoidField.js splitByLayer) with its own buffers, its own
+   *  size/brightness/softness/highlight uniforms (CONFIG.PARTICLE_LAYERS),
+   *  and — set by the caller just before this runs — its own blend mode.
+   *  This per-population blend mode is what actually fixes dense
+   *  anatomical overlap (the nose ridge especially) stacking to saturated
+   *  white: structural now composites with soft alpha (bounded, "over"-
+   *  style) instead of unbounded additive accumulation. */
+  _drawHumanoidLayer(name, pose, audio) {
+    const gl = this.gl;
+    const hp = this.humanoidProgram;
+    const layer = this.humanoidLayers[name];
+    const PL = CONFIG.PARTICLE_LAYERS[name];
+    const u = (uName) => gl.getUniformLocation(hp, uName);
+
+    gl.uniform1f(u('uSizeMul'), PL.sizeMul);
+    gl.uniform1f(u('uBrightMul'), PL.brightMul);
+    gl.uniform1f(u('uSoftnessVal'), PL.softness);
+    gl.uniform1f(u('uHighlightMix'), PL.highlightMix);
+    gl.uniform1f(u('uPointerSpeed'), pose.pointerSpeed || 0);
+    gl.uniform1f(u('uMotionSizeResponse'), PL.motionSizeResponse);
+    gl.uniform1f(u('uCameraDistance'), CONFIG.CAMERA.distance);
+    gl.uniform1f(u('uDepthLumRange'), CONFIG.DEPTH_LUMINANCE.range);
+    gl.uniform1f(u('uDepthLumStrength'), CONFIG.DEPTH_LUMINANCE.strength);
+
+    const b = layer.buffers;
+    bindAttrib(gl, hp, 'aPosition', b.position, 3);
+    bindAttrib(gl, hp, 'aPart', b.part, 1);
+    bindAttrib(gl, hp, 'aFace', b.face, 1);
+    bindAttrib(gl, hp, 'aSize', b.size, 1);
+    bindAttrib(gl, hp, 'aBrightness', b.brightness, 1);
+    bindAttrib(gl, hp, 'aRandom', b.random, 1);
+    bindAttrib(gl, hp, 'aSeed', b.seed, 3);
+    bindAttrib(gl, hp, 'aEdge', b.edge, 1);
+
+    gl.drawArrays(gl.POINTS, 0, layer.count);
+  }
+
   /** Renders the full scene (environment + humanoid) into whatever
    *  framebuffer is currently bound — the offscreen sceneFBO when bloom
-   *  is active, or straight to the canvas in the fallback path. */
+   *  is active, or straight to the canvas in the fallback path. Every
+   *  particle shader outputs premultiplied color (see PARTICLE_CORE_GLSL
+   *  callers), so the same (ONE, ONE_MINUS_SRC_ALPHA) blend mode gives
+   *  correct soft "over" compositing, and (ONE, ONE) on the same premultiplied
+   *  output gives correct additive accumulation — one shader, two
+   *  compositing behaviors, chosen per population below. */
   _renderScene(pose, audio) {
     const gl = this.gl;
-    gl.enable(gl.BLEND);
-    gl.blendFunc(gl.SRC_ALPHA, gl.ONE);
     gl.disable(gl.DEPTH_TEST);
     gl.clearColor(0, 0, 0, 0);
     gl.clear(gl.COLOR_BUFFER_BIT);
+    gl.enable(gl.BLEND);
+    const SOFT_ALPHA = () => gl.blendFunc(gl.ONE, gl.ONE_MINUS_SRC_ALPHA);
+    const ADDITIVE = () => gl.blendFunc(gl.ONE, gl.ONE);
 
-    // ---- Environment: back-to-front (far -> fog -> aura). ----------------
+    // ---- Environment: back-to-front (far -> fog -> aura), soft alpha —
+    // atmosphere, never an accumulating additive glow. ---------------------
     resetAttribs(gl);
     gl.useProgram(this.envProgram);
     this._setCommonUniforms(gl, this.envProgram, audio);
+    SOFT_ALPHA();
     this._drawEnvLayer('far', 0.012);
     this._drawEnvLayer('fog', 0.03);
     this._drawEnvLayer('aura', 0.06);
 
-    // ---- Humanoid field ------------------------------------------------
+    // ---- Humanoid: structural (base anatomy) -> peripheral (silhouette
+    // glow) both soft alpha, then luminous (landmark accents) additive on
+    // top. ------------------------------------------------------------------
     resetAttribs(gl);
     const hp = this.humanoidProgram;
     gl.useProgram(hp);
@@ -801,11 +891,6 @@ class ParticleSystem {
     gl.uniform3fv(u('uColorSecondary'), CONFIG.COLOR_SECONDARY);
     gl.uniform3fv(u('uColorHighlight'), CONFIG.COLOR_HIGHLIGHT);
 
-    const PL = CONFIG.PARTICLE_LAYERS;
-    gl.uniform3f(u('uLayerSizeMul'), PL.structural.sizeMul, PL.luminous.sizeMul, PL.peripheral.sizeMul);
-    gl.uniform3f(u('uLayerBrightMul'), PL.structural.brightMul, PL.luminous.brightMul, PL.peripheral.brightMul);
-    gl.uniform3f(u('uLayerSoftness'), PL.structural.softness, PL.luminous.softness, PL.peripheral.softness);
-
     const AU = CONFIG.AUDIO;
     gl.uniform1f(u('uAudioMid'), audio.mid);
     gl.uniform1f(u('uMidFlowScale'), AU.midFlowScale);
@@ -814,23 +899,18 @@ class ParticleSystem {
     gl.uniform1f(u('uAudioEnergy'), audio.amplitude);
     gl.uniform1f(u('uEnergyBrightnessScale'), AU.energyBrightnessScale);
 
-    bindAttrib(gl, hp, 'aPosition', this.humanoidBuffers.position, 3);
-    bindAttrib(gl, hp, 'aPart', this.humanoidBuffers.part, 1);
-    bindAttrib(gl, hp, 'aFace', this.humanoidBuffers.face, 1);
-    bindAttrib(gl, hp, 'aSize', this.humanoidBuffers.size, 1);
-    bindAttrib(gl, hp, 'aBrightness', this.humanoidBuffers.brightness, 1);
-    bindAttrib(gl, hp, 'aRandom', this.humanoidBuffers.random, 1);
-    bindAttrib(gl, hp, 'aSeed', this.humanoidBuffers.seed, 3);
-    bindAttrib(gl, hp, 'aEdge', this.humanoidBuffers.edge, 1);
-    bindAttrib(gl, hp, 'aLayer', this.humanoidBuffers.layer, 1);
-
-    gl.drawArrays(gl.POINTS, 0, this.humanoidCount);
+    SOFT_ALPHA();
+    this._drawHumanoidLayer('structural', pose, audio);
+    this._drawHumanoidLayer('peripheral', pose, audio);
+    ADDITIVE();
+    this._drawHumanoidLayer('luminous', pose, audio);
 
     // ---- Foreground: sparse, soft, close-to-camera parallax dust drawn
-    // last so it reads as being in front of the figure. -------------------
+    // last so it reads as being in front of the figure. Soft alpha. --------
     resetAttribs(gl);
     gl.useProgram(this.envProgram);
     this._setCommonUniforms(gl, this.envProgram, audio);
+    SOFT_ALPHA();
     this._drawEnvLayer('foreground', 0.09);
   }
 
@@ -929,7 +1009,9 @@ class ParticleSystem {
 
   dispose() {
     const gl = this.gl;
-    for (const buf of Object.values(this.humanoidBuffers)) gl.deleteBuffer(buf);
+    for (const name of Object.keys(this.humanoidLayers)) {
+      for (const buf of Object.values(this.humanoidLayers[name].buffers)) gl.deleteBuffer(buf);
+    }
     for (const layer of ENV_LAYERS) {
       for (const buf of Object.values(this.envBuffers[layer.key])) gl.deleteBuffer(buf);
     }

@@ -171,24 +171,43 @@ const CONFIG = {
 
   // ---- Humanoid particle hierarchy ---------------------------------------
   // Every humanoid particle is tagged structural/luminous/peripheral at
-  // generation time (see humanoidField.js writeParticle's LAYER_* consts).
-  // These per-layer multipliers are what actually makes the three read as
-  // visually distinct populations rather than one uniform point cloud:
-  // sizeMul/brightMul scale the particle's own base size/brightness,
-  // softness blends the fragment shader's tight core profile (0) toward
-  // its wide soft-glow profile (1) — see PARTICLE_CORE_GLSL.
-  // Structural brightness kept deliberately modest: it's the majority
-  // population and densely overlaps at anatomical landmarks (the nose
-  // ridge especially, from importance sampling) — at full brightness that
-  // overlap alone saturates to white before bloom even applies, washing
-  // out the exact facial detail this layer exists to carry. Luminous
-  // stays the clearly-brighter accent layer, but pulled back from its
-  // first pass (1.75) which bloomed into a blown-out patch instead of a
-  // sparkle.
+  // generation time (see humanoidField.js writeParticle's LAYER_* consts,
+  // and splitByLayer which buckets them into three genuinely separate
+  // buffers/draw calls). These per-layer multipliers are what makes the
+  // three read as visually distinct populations: sizeMul/brightMul scale
+  // the particle's own base size/brightness, softness blends the
+  // fragment shader's tight core profile (0) toward its wide soft-glow
+  // profile (1) — see PARTICLE_CORE_GLSL — highlightMix pulls the color
+  // toward the hot highlight tone, and motionSizeResponse is how much
+  // this layer's sprites grow under fast pointer motion (0 = stable;
+  // structural stays completely stable, anatomy must never wobble).
+  //
+  // Earlier tuning history worth keeping: the first pass rendered every
+  // layer with one additive blend mode for the whole humanoid, including
+  // the dense structural bulk — overlapping particles at anatomical
+  // landmarks (the nose ridge especially, from importance sampling)
+  // stacked straight to saturated white before bloom even applied, and
+  // the only lever available was dimming structural brightness/size to
+  // compensate. Structural/peripheral now composite with soft (bounded,
+  // premultiplied "over") alpha instead — see particleSystem.js
+  // _renderScene's SOFT_ALPHA()/ADDITIVE() — so overlap naturally caps at
+  // opaque instead of blowing out, and structural brightness could be
+  // restored back toward its intended strength.
   PARTICLE_LAYERS: {
-    structural: { sizeMul: 0.85, brightMul: 0.85, softness: 0.08 },
-    luminous: { sizeMul: 1.35, brightMul: 1.4, softness: 0.35 },
-    peripheral: { sizeMul: 2.1, brightMul: 0.5, softness: 0.85 },
+    structural: { sizeMul: 0.9, brightMul: 1.0, softness: 0.08, highlightMix: 0.0, motionSizeResponse: 0.0 },
+    luminous: { sizeMul: 1.4, brightMul: 1.5, softness: 0.35, highlightMix: 0.5, motionSizeResponse: 0.08 },
+    peripheral: { sizeMul: 2.1, brightMul: 0.65, softness: 0.85, highlightMix: 0.15, motionSizeResponse: 0.12 },
+  },
+
+  // ---- Depth-based luminance -----------------------------------------------
+  // Camera-space depth as an optical signal, not just a size falloff: an
+  // eased (not linear) curve centered on the camera's own focal distance
+  // (CAMERA.distance) — particles near it read at full contrast, particles
+  // further away in front of OR behind it dim gently. See uDepthLumRange/
+  // uDepthLumStrength in HUMANOID_VERT.
+  DEPTH_LUMINANCE: {
+    range: 2.2,
+    strength: 0.35,
   },
 
   // ---- Bloom post-process -------------------------------------------------
