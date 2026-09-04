@@ -1,0 +1,87 @@
+* {
+  margin: 0;
+  padding: 0;
+  box-sizing: border-box;
+}
+
+html,
+body {
+  width: 100%;
+  height: 100%;
+  overflow: hidden;
+  background: #010208;
+}
+
+body {
+  /* Extremely subtle cool radial haze behind the (transparent-cleared)
+     canvas — a near-zero-cost stand-in for volumetric atmosphere. */
+  background: radial-gradient(ellipse at 50% 38%, #061422 0%, #030812 42%, #010208 78%, #000103 100%);
+}
+
+canvas {
+  position: fixed;
+  inset: 0;
+  display: block;
+}
+
+#activation {
+  position: fixed;
+  inset: 0;
+  z-index: 20;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 14px;
+  background: #010208;
+  transition: opacity 0.9s ease;
+}
+
+#activation.hidden {
+  opacity: 0;
+  pointer-events: none;
+}
+
+#activate-btn {
+  font-family: 'SFMono-Regular', Consolas, 'Liberation Mono', Menlo, monospace;
+  font-size: 13px;
+  letter-spacing: 0.18em;
+  color: #bdf3ff;
+  background: transparent;
+  border: 1px solid rgba(120, 220, 255, 0.4);
+  padding: 16px 34px;
+  border-radius: 2px;
+  cursor: pointer;
+  transition: background 0.25s ease, box-shadow 0.25s ease, border-color 0.25s ease;
+}
+
+#activate-btn:hover {
+  background: rgba(90, 210, 255, 0.08);
+  border-color: rgba(150, 230, 255, 0.75);
+  box-shadow: 0 0 26px rgba(80, 200, 255, 0.25);
+}
+
+#activate-hint {
+  font-family: 'SFMono-Regular', Consolas, 'Liberation Mono', Menlo, monospace;
+  font-size: 11px;
+  letter-spacing: 0.08em;
+  color: rgba(180, 220, 235, 0.4);
+}
+
+#debug {
+  position: fixed;
+  bottom: 12px;
+  left: 12px;
+  z-index: 25;
+  font-family: 'SFMono-Regular', Consolas, 'Liberation Mono', Menlo, monospace;
+  font-size: 11px;
+  line-height: 1.5;
+  color: rgba(120, 230, 255, 0.8);
+  background: rgba(1, 2, 8, 0.55);
+  border: 1px solid rgba(120, 220, 255, 0.15);
+  padding: 8px 10px;
+  border-radius: 4px;
+  pointer-events: none;
+  white-space: pre;
+  backdrop-filter: blur(2px);
+}

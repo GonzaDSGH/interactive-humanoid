@@ -3,22 +3,38 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
-    <title>Sentience — Interactive Humanoid</title>
-    <meta name="description" content="A realtime WebGL digital being that watches and follows your cursor." />
-    <link
-      rel="icon"
-      href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'%3E%3Ccircle cx='50' cy='50' r='42' fill='%2303060a'/%3E%3Ccircle cx='50' cy='50' r='42' fill='none' stroke='%2300dfff' stroke-width='4'/%3E%3Ccircle cx='50' cy='50' r='16' fill='%23ff8a20'/%3E%3C/svg%3E"
+    <title>Digital Consciousness — Particle Humanoid</title>
+    <meta
+      name="description"
+      content="A generative digital humanoid made entirely of particles, reacting to the microphone and the pointer."
     />
-    <link rel="stylesheet" href="/src/style.css" />
+    <link rel="stylesheet" href="style.css" />
+
+    <!-- p5.js core + sound addon (microphone input / FFT). Vendored locally
+         in lib/ (fetched from npm) rather than a CDN, so the project runs
+         from a plain static server with no build step and no external
+         network dependency at runtime. -->
+    <script src="lib/p5.min.js"></script>
+    <script src="lib/p5.sound.min.js"></script>
+    <!-- gl-matrix: small vector/matrix math library used for the GPU particle
+         system's rigid body-part transforms (mat4/quat), driven raw WebGL. -->
+    <script src="lib/gl-matrix-min.js"></script>
   </head>
   <body>
-    <div id="app">
-      <canvas id="scene"></canvas>
-      <div id="loading">
-        <div class="loading-glyph"></div>
-      </div>
-      <div id="debug" hidden></div>
+    <div id="activation">
+      <button id="activate-btn" type="button">ACTIVAR EXPERIENCIA</button>
+      <p id="activate-hint">Requiere acceso al micrófono</p>
     </div>
-    <script type="module" src="/src/main.ts"></script>
+    <div id="debug" hidden></div>
+
+    <!-- Project scripts. Each file only DEFINES globals (config, classes,
+         functions); sketch.js instantiates everything inside setup(), so
+         load order between these only needs to precede sketch.js. -->
+    <script src="config.js"></script>
+    <script src="attention.js"></script>
+    <script src="audio.js"></script>
+    <script src="humanoidField.js"></script>
+    <script src="particleSystem.js"></script>
+    <script src="sketch.js"></script>
   </body>
 </html>

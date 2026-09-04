@@ -1,128 +1,131 @@
-# Sentience — Interactive Humanoid
+# Sentience — Particle Humanoid (p5.js)
 
-A fullscreen, realtime WebGL digital being that watches and follows your cursor.
-Built with Vite, TypeScript and Three.js. No backend, no webcam, no external
-3D models — the humanoid, its contour lines, its energy core and the
-environment are all generated procedurally in code.
+A fullscreen, realtime generative artwork: a humanoid bust made entirely of
+GPU-driven particles, alive with coherent-noise motion, that turns its
+attention toward the pointer and breathes/flows with whatever the
+microphone hears. Built with **p5.js** (WEBGL renderer) for a Generative
+Art university assignment. No mesh, no shell, no images — every pixel of
+the figure is a particle, positioned by an analytic density field and
+animated by hand-written GLSL shaders driven directly through p5's raw
+WebGL context.
 
-## Install
+## Run it
 
-```bash
-npm install
-```
-
-## Run (development)
-
-```bash
-npm run dev
-```
-
-Opens a local dev server (default `http://localhost:5173`). Append
-`?debug=1` to the URL to show a small readout of pointer position, FPS and
-per-layer rotation values, useful for tuning.
-
-## Build
+The piece needs to be served over HTTP (the microphone requires a secure
+context, and browsers block `getUserMedia` on `file://`). From the project
+root:
 
 ```bash
-npm run build
+python3 -m http.server 8080
+# or: npx http-server -p 8080
 ```
 
-Type-checks the project and produces a static production build in `dist/`.
-Preview it with `npm run preview`.
+Then open `http://localhost:8080/` and click **ACTIVAR EXPERIENCIA**. The
+browser will ask for microphone permission — accept it to drive the
+figure's internal energy with sound. If you decline or have no microphone,
+the piece still runs: the autonomous noise-driven motion keeps it alive,
+just without audio reactivity.
 
-## Where the tuning constants live
+No build step, no bundler, no `npm install` required to run — `p5.js`,
+`p5.sound` and `gl-matrix` are vendored locally under `lib/`.
 
-All artistic and behavioral constants are centralized in
-[`src/config.ts`](src/config.ts):
+## Controls
 
-- **`COLORS`** — the cyan/orange/yellow palette.
-- **`RENDER`** — camera FOV, distance, framing.
-- **`BLOOM`** / **`POST`** — bloom strength/threshold/radius, vignette, grain.
-- **`DYNAMICS`** — per-layer second-order spring parameters (`f` response
-  frequency, `z` damping ratio, `r` anticipation) that drive the
-  pointer → face → head → neck → shoulders → torso attention cascade.
-- **`LIMITS`** — max rotation angles per layer.
-- **`HUMANOID`** — head/neck/torso proportions.
-- **`CONTOUR`** — contour-line frequency, thickness, rim/fresnel strength,
-  shell fill, micro-line and panel-seam intensity.
-- **`FACE_CORE`** — the energy core's size, color banding, reactor rings,
-  iris spokes and bezel.
-- **`LANDSCAPE`** / **`PARTICLES`** / **`HUD`** / **`ATMOSPHERE`** — the
-  background environment.
-- `src/utils/sculpt.ts` — the head's radial-displacement sculpting
-  function (`sculptHeadRadius`): cranium, temple flare, brow ridge, face
-  plate, cheekbones, jaw taper — tune these to reshape the skull.
+- **Mouse / pointer** — secondary input, "attention." The figure's face,
+  head, neck, shoulders and torso turn toward the pointer in a cascade,
+  each stage lagging and settling a little more than the last, with a
+  smooth ease back to a neutral, centered pose a moment after the pointer
+  leaves the window.
+- **Microphone** — primary hardware input, "internal energy." Bass drives
+  a slow structural breathing pulse, mid frequencies drive internal
+  turbulence in the particle flow, treble adds fine sparkle at the figure's
+  edges, and overall amplitude lifts global brightness. All of it is
+  smoothed so it reads as a wave of energy, never a flash.
+- **`?debug=1`** — append to the URL for a small overlay (fps, quality
+  tier, particle count, mic status, audio levels, pointer position, head/
+  torso yaw). Hidden by default; not part of the artwork's presentation.
 
-## Architecture
+## How it's built
 
-- `src/core/` — renderer, camera, `EffectComposer` + `UnrealBloomPass` +
-  a small vignette/grain finishing pass.
-- `src/input/` — `PointerTracker` (raw pointer → normalized target, with
-  idle/leave-to-center handling) and `AttentionController`, which cascades
-  the pointer through a chain of `SecondOrderDynamics` filters (a proper
-  damped-spring integrator, not a plain lerp) to produce each body layer's
-  yaw/pitch/roll with increasing delay and decreasing amplitude down the
-  chain. **This interaction system is the stable core of the project** —
-  the visual layers below are built on top of it and can be redesigned
-  independently.
-- `src/humanoid/` — procedural geometry and materials:
-  - The head is a subdivided icosahedron sculpted by displacing every
-    vertex along its own ray from the origin (`buildDisplacedIcosahedron`
-    + `sculptHeadRadius`) into a cranium, flared temples, a brow ridge, a
-    recessed front face-plate, cheekbones and a tapered jaw. Being a pure
-    radial displacement it can never self-intersect, and — unlike a
-    lathed/revolved profile — it isn't rotationally symmetric, so the
-    silhouette actually changes as the head yaws.
-  - The neck is a lathe with subtle periodic ring bumps (armored/segmented
-    look) and overlaps up into the head's own volume so no seam is ever
-    visible at the join. A thin torus collar ring sits at its base.
-  - The torso/shoulders lathe profile has a defined deltoid bulge and a
-    collar step rather than a smooth monotonic taper.
-  - The contour `ShaderMaterial` layers a primary + secondary "micro
-    circuit" line pattern, a faint translucent shell fill, a two-tone
-    fresnel rim, and geometry-driven panel-seam accents (computed
-    analytically from the same normalized coordinates the sculpting used)
-    on top of the original stable, object-space contour bands.
-  - The face core reads as an embedded reactor — concentric iris rings, a
-    faint rotating spoke pattern and a bright lens bezel — sunk into the
-    head's recessed face-plate socket instead of floating in front of it.
-  - The transform hierarchy (torso → shoulders → neck → head → face core)
-    is real nested `Object3D`s pivoted at each joint, so a rigged GLB
-    could be substituted later without touching the interaction system.
-- `src/environment/` — `Atmosphere` (a vertical-gradient backdrop plane
-  plus a few soft low-opacity radial haze planes at increasing depth,
-  standing in for volumetric fog), the procedural cyan/orange ridge-line
-  `Landscape`, sparse HUD arcs/orbital dots, and a single-draw-call GPU
-  `Particles` system: dust is gathered into Gaussian clusters around the
-  head's actual structural landmarks (crown, temples, jaw) rather than
-  scattered over a uniform shell, and a small marked subset renders as a
-  3-phase velocity-lag "trail spark" streak, gated by pointer speed so it
-  stays invisible at rest and only appears during fast movement.
+| File | Responsibility |
+| --- | --- |
+| `index.html` | Loads the vendored libraries and project scripts, in order. |
+| `style.css` | Fullscreen canvas, activation-screen overlay, debug panel styling, the CSS radial-gradient atmospheric backdrop behind the (alpha-transparent) WebGL canvas. |
+| `config.js` | Every tunable constant: quality presets, palette, camera, skeleton proportions, body-part field shapes, particle sizing, audio-reactivity scales, idle motion, and the pointer-attention dynamics. |
+| `attention.js` | The pointer-attention system: `SecondOrderDynamics` (a critically/under-damped spring filter), `PointerTracker` (raw pointer state + return-to-center-on-leave), and `AttentionController` (the face → head → neck → shoulders → torso cascade). Framework-agnostic plain JS. |
+| `audio.js` | `AudioAnalyzer` — wraps `p5.AudioIn` + `p5.FFT`, started from the activation button's click (required by browser autoplay/mic policy), exposing smoothed `amplitude`/`bass`/`mid`/`treble`. |
+| `humanoidField.js` | No mesh is ever built. This module decides *where particles are allowed to exist*: analytic ellipsoid volumes for head/face/neck/shoulders, shaped by direction-dependent radius functions (`headShape`, `shoulderShape`) that sculpt cranium, temples, jaw, clavicles, etc. purely through particle placement. |
+| `particleSystem.js` | The GPU renderer. Compiles its own vertex/fragment shader programs and issues raw `gl.drawArrays(POINTS, …)` calls through p5's WEBGL context (`p.drawingContext`) — no per-particle JS objects or `ellipse()` calls. Contains the coherent-noise (simplex) flow field, the 3-bone shoulder→neck→head rigid skinning (via `gl-matrix`), audio-uniform wiring, and the adaptive-quality buffer rebuild. |
+| `sketch.js` | p5 entry point: `setup()`/`draw()`, pointer/activation DOM wiring, the one-way adaptive-quality downgrade loop, and the debug overlay. |
+| `lib/` | Vendored `p5.min.js`, `p5.sound.min.js`, `gl-matrix-min.js`. |
 
-## Implementation notes worth knowing
+### Particle architecture
 
-- The face energy core is rendered in a **separate pass, after bloom**
-  (`SceneManager.renderOverlayLayer`, on its own camera layer) instead of
-  going through `UnrealBloomPass` like the rest of the scene. Bloom's
-  downsample/blur pyramid produces a visible ring artifact around small,
-  soft-edged, saturated shapes (classic Gibbs-phenomenon ringing) —
-  occluding the core from the bloom composite and drawing it directly on
-  top removes that artifact while keeping everything else glowing
-  normally.
-- The scene background is a real plane mesh with a vertical-gradient
-  shader (`Atmosphere`'s backdrop plane), not `scene.background` set to a
-  `CanvasTexture`. The latter renders fine in most browsers but silently
-  broke the entire frame in this project's headless/software-rendered
-  test environment (no thrown error — every subsequent draw call just
-  stopped painting) — the plane-based approach sidesteps that risk
-  entirely and looks identical.
+The humanoid is **never** a mesh. `humanoidField.js` samples particle
+positions directly from analytic volumes (ellipsoids for head, face, neck,
+shoulders), each with its own direction-dependent shape function that
+adds/subtracts radius to sculpt anatomical landmarks (crown, temple, brow,
+cheek, jaw, deltoid, clavicle) — a form built entirely out of *where dust
+is allowed to settle*. Each part also gets a sparse, slightly displaced
+"halo" fraction so the silhouette reads as soft volumetric matter rather
+than a crisp cutout.
 
-## Known limitations
+At render time, `particleSystem.js` uploads these positions as static GL
+buffers once per quality tier, then does all *motion* on the GPU: each
+particle carries a "part" id (shoulder/neck/head) and is transformed every
+frame by that part's own rigid 4×4 matrix, computed once per frame on the
+CPU from the attention system's pose and uploaded as a uniform — the same
+technique as GPU bone/skin animation, with three bones. On top of that
+rigid transform, the vertex shader adds: idle sinusoidal drift, the
+coherent-noise flow field, a pointer-velocity-driven mass-flow toward
+recent cursor motion (stronger toward the head, softer toward the
+shoulders), and a face-specific shift that lets the face "notice" the
+pointer a beat before the rest of the head turns.
 
-- Tuned and screenshot-tested against a software (SwiftShader) renderer in
-  a headless sandbox; frame rate there is not representative of a real
-  GPU — expect smoother 60fps on actual hardware.
-- The sculpted head is a stylized, faceless bust rather than a
-  photorealistic robot; it's tuned for a strong silhouette and clean
-  contour-line shading at the camera distances/angles the pointer-tracking
-  range actually reaches, not for extreme close-ups.
+### Particle counts per quality tier
+
+Adaptive quality is **one-way** (downgrade only, never upgrades back) and
+rebuilds the humanoid/ambient buffers in place — no shader recompilation —
+after several consecutive seconds of sustained low FPS, with a cooldown
+between steps.
+
+| Tier | Head | Face | Neck | Shoulders | Ambient | Total |
+| --- | --- | --- | --- | --- | --- | --- |
+| ULTRA | 34,000 | 11,000 | 5,000 | 38,000 | 900 | 88,900 |
+| HIGH | 20,000 | 6,500 | 3,000 | 22,000 | 600 | 52,100 |
+| MEDIUM | 10,000 | 3,200 | 1,600 | 11,000 | 350 | 26,150 |
+
+### Audio mapping
+
+| Band | Effect | Where |
+| --- | --- | --- |
+| Bass | Extra breathing amplitude (slow structural pulse) | `particleSystem.js` breathing term |
+| Mid | Extra coherent-noise flow amount (internal turbulence) | `HUMANOID_VERT` `uAudioMid` |
+| Treble | Fine sparkle brightness at edge/halo particles | `HUMANOID_FRAG` `uAudioTreble` |
+| Amplitude | Global brightness lift | `HUMANOID_FRAG` `uAudioEnergy` |
+
+All four are exponentially smoothed (`CONFIG.AUDIO.smoothing`) before they
+touch anything visual, by design — the brief this was built against
+explicitly forbids aggressive flashing on speech/sound.
+
+### Perlin/coherent noise
+
+A GLSL simplex-noise implementation (`NOISE_GLSL` in `particleSystem.js`)
+evaluates a genuine 3D flow field every frame, sampled at each particle's
+world position and slowly advected through time. This is the artwork's
+autonomous motion — it runs whether or not anyone is present, is boosted
+by mid-frequency audio energy, and is what keeps the figure reading as
+alive rather than a static point cloud.
+
+## Notes / limitations
+
+- Requires WebGL and (for audio) a browser that grants microphone access
+  under a secure/local context.
+- Adaptive quality reacts to your machine's actual sustained frame rate —
+  on a slow GPU or in a software-rendered environment it will settle at a
+  lower tier automatically; this is expected, not a bug.
+- The activation screen is intentionally the only UI. Once dismissed there
+  is no further interface — the piece is meant to be looked at and spoken/
+  played to, not operated.
+
+See [`memoria.md`](memoria.md) for the assignment write-up.
