@@ -20,13 +20,14 @@ export function buildHeadGeometry(): THREE.BufferGeometry {
 
   const raw: [number, number][] = [
     [neckR * 0.92, 0.0],
-    [R * 0.5, H * 0.09],
-    [R * 0.74, H * 0.22],
-    [R * 0.9, H * 0.38],
-    [R * 1.0, H * 0.56],
-    [R * 0.94, H * 0.72],
-    [R * 0.72, H * 0.86],
-    [R * 0.34, H * 0.96],
+    [R * 0.62, H * 0.08],
+    [R * 0.86, H * 0.2],
+    [R * 0.98, H * 0.34],
+    [R * 1.0, H * 0.48],
+    [R * 0.97, H * 0.62],
+    [R * 0.86, H * 0.76],
+    [R * 0.58, H * 0.9],
+    [R * 0.2, H * 0.98],
     [R * 0.02, H * 1.0],
   ];
 
@@ -73,23 +74,17 @@ export function buildNeckGeometry(): THREE.BufferGeometry {
   return geometry;
 }
 
-/** Curved patch hugging the front of the head, used to host the face energy core. */
+/**
+ * Flat panel hosting the face energy core, positioned just in front of
+ * the head's surface. A flat plane (rather than a curved sphere patch)
+ * guarantees zero self-overlap in screen space at any viewing angle
+ * within the head's limited yaw range, and gives the shader a clean,
+ * linear, undistorted UV space to work with.
+ */
 export function buildFaceCoreGeometry(): THREE.BufferGeometry {
-  const phiCenter = Math.PI * 0.5; // +Z (front) at the equator
-  const phiLength = 1.5;
-  const thetaCenter = Math.PI * 0.5;
-  const thetaLength = 1.8;
-
-  const geometry = new THREE.SphereGeometry(
-    HUMANOID.headRadius * 0.965,
-    48,
-    48,
-    phiCenter - phiLength / 2,
-    phiLength,
-    thetaCenter - thetaLength / 2,
-    thetaLength
-  );
-  geometry.translate(0, HUMANOID.headRadius * HUMANOID.headHeightScale * 0.9, 0);
-  geometry.scale(1, HUMANOID.headHeightScale * 0.92, HUMANOID.headDepthScale);
+  const width = HUMANOID.headRadius * 1.5;
+  const height = HUMANOID.headRadius * HUMANOID.headHeightScale * 1.15;
+  const geometry = new THREE.PlaneGeometry(width, height, 24, 24);
+  geometry.translate(0, HUMANOID.headRadius * HUMANOID.headHeightScale * 0.82, HUMANOID.headRadius * HUMANOID.headDepthScale * 0.62);
   return geometry;
 }

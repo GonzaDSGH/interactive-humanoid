@@ -2,7 +2,7 @@ import * as THREE from 'three';
 import { SceneManager } from './core/SceneManager';
 import { PointerTracker } from './input/PointerTracker';
 import { AttentionController } from './input/AttentionController';
-import { Humanoid } from './humanoid/Humanoid';
+import { Humanoid, FACE_CORE_LAYER } from './humanoid/Humanoid';
 import { Landscape } from './environment/Landscape';
 import { HUD } from './environment/HUD';
 import { Particles } from './environment/Particles';
@@ -24,8 +24,10 @@ const debugPanel = new DebugPanel();
 landscape.group.position.z = 0;
 sceneManager.scene.add(humanoid.group);
 sceneManager.scene.add(landscape.group);
-sceneManager.scene.add(hud.group);
-sceneManager.scene.add(particles.points);
+// HUD and particles are parented to the humanoid's stable (non-rotating)
+// group so their head-relative positioning stays correct automatically.
+humanoid.group.add(hud.group);
+humanoid.group.add(particles.points);
 
 function handleResize(): void {
   sceneManager.resize(window.innerWidth, window.innerHeight);
@@ -48,6 +50,7 @@ function animate(): void {
   particles.update(dt, pointer.velocity.x, pointer.velocity.y);
 
   sceneManager.render(dt);
+  sceneManager.renderOverlayLayer(FACE_CORE_LAYER);
   debugPanel.update(dt, pose, pointer.target);
 
   if (firstFrame) {

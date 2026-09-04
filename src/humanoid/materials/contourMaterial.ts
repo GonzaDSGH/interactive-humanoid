@@ -6,6 +6,7 @@ export interface ContourMaterialOptions {
   bandFrequency: number;
   bandSharpness: number;
   centerlineStrength: number;
+  faceHole?: { center: [number, number]; size: [number, number] };
 }
 
 const vertexShader = /* glsl */ `
@@ -45,6 +46,9 @@ const fragmentShader = /* glsl */ `
   uniform vec3 uColorSecondary;
   uniform vec3 uColorWarm;
   uniform float uOpacity;
+  uniform vec2 uFaceHoleCenter;
+  uniform vec2 uFaceHoleSize;
+  uniform float uFaceHoleEnable;
 
   ${noiseGLSL}
 
@@ -61,29 +65,38 @@ const fragmentShader = /* glsl */ `
     bandCoord += wobble;
 
     float pattern = abs(fract(bandCoord) - 0.5) * 2.0;
-    float aa = max(fwidth(bandCoord), 0.0008);
+    float aa = max(fwidth(bandCoord), 0.0015);
     float line = 1.0 - smoothstep(uBandSharpness - aa, uBandSharpness + aa, pattern);
 
     float fresnel = pow(clamp(1.0 - dot(n, v), 0.0, 1.0), uRimPower);
 
     float facing = clamp(dot(n, v), 0.0, 1.0);
-    float interiorFade = mix(0.35, 1.0, facing);
+    float interiorFade = mix(0.12, 1.0, facing);
 
     float intensity = line * uLineBrightness * interiorFade + fresnel * uRimStrength;
+    intensity = clamp(intensity, 0.0, 1.35);
 
     // Faint bright seam down the front centerline (sternum / midline accent).
     float centerDist = abs(vLocalPos.x);
     float frontFacing = smoothstep(-0.1, 0.35, vLocalPos.z / max(radial, 0.001));
     float centerline = (1.0 - smoothstep(0.0, uCenterlineWidth, centerDist)) * frontFacing * uCenterlineStrength;
+    centerline = clamp(centerline, 0.0, 1.0);
 
-    vec3 color = mix(uColorSecondary, uColorPrimary, clamp(line + fresnel * 0.6, 0.0, 1.0));
-    color = mix(color, uColorWarm, clamp(centerline * 0.85, 0.0, 1.0));
+    vec3 color = mix(uColorSecondary, uColorPrimary, clamp(line + fresnel * 0.5, 0.0, 1.0));
+    color = mix(color, uColorWarm, centerline * 0.7);
 
-    float alpha = clamp(intensity + centerline, 0.0, 1.6) * uOpacity;
+    // Carve a hole where the face energy core sits, on the front side
+    // only, so that mesh can occupy the area without the two additively
+    // blending into a magenta fringe at their overlap.
+    vec2 fp = (vLocalPos.xy - uFaceHoleCenter) / uFaceHoleSize;
+    float faceDist = length(fp);
+    float faceHole = uFaceHoleEnable * (1.0 - smoothstep(0.72, 0.94, faceDist)) * step(0.0, vLocalPos.z);
 
-    if (alpha < 0.006) discard;
+    float alpha = clamp(intensity + centerline * 0.9, 0.0, 1.0) * uOpacity * (1.0 - faceHole);
 
-    gl_FragColor = vec4(color * (intensity + centerline * 1.4), alpha);
+    if (alpha < 0.008) discard;
+
+    gl_FragColor = vec4(color * (intensity + centerline * 0.9) * (1.0 - faceHole), alpha);
   }
 `;
 
@@ -111,6 +124,13 @@ export function createContourMaterial(options: ContourMaterialOptions): THREE.Sh
       uColorSecondary: { value: new THREE.Color(COLORS.cyanSecondary) },
       uColorWarm: { value: new THREE.Color(COLORS.orange) },
       uOpacity: { value: 1.0 },
+      uFaceHoleCenter: {
+        value: new THREE.Vector2(...(options.faceHole?.center ?? [0, 0])),
+      },
+      uFaceHoleSize: {
+        value: new THREE.Vector2(...(options.faceHole?.size ?? [1, 1])),
+      },
+      uFaceHoleEnable: { value: options.faceHole ? 1.0 : 0.0 },
     },
   });
 }

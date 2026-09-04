@@ -1,5 +1,5 @@
 import * as THREE from 'three';
-import { COLORS, PARTICLES, HUMANOID } from '../config';
+import { COLORS, PARTICLES, HUMANOID, HEAD_LOCAL_CENTER_Y } from '../config';
 import { damp } from '../utils/math';
 
 const vertexShader = /* glsl */ `
@@ -27,11 +27,11 @@ const vertexShader = /* glsl */ `
 
     vec4 mvPosition = modelViewMatrix * vec4(pos, 1.0);
     float sizeAtten = 1.0 / max(-mvPosition.z, 0.001);
-    gl_PointSize = aSize * uPixelRatio * sizeAtten * 260.0;
+    gl_PointSize = aSize * uPixelRatio * sizeAtten * 90.0;
     gl_Position = projectionMatrix * mvPosition;
 
     float depthFade = smoothstep(-14.0, -1.0, mvPosition.z);
-    vAlpha = (0.35 + aRandom * 0.65) * depthFade;
+    vAlpha = (0.2 + aRandom * 0.45) * depthFade;
   }
 `;
 
@@ -63,21 +63,25 @@ export class Particles {
     const randoms = new Float32Array(count);
     const seeds = new Float32Array(count * 3);
 
-    const haloCount = Math.floor(count * 0.6);
+    const haloCount = Math.floor(count * PARTICLES.haloFraction);
 
     for (let i = 0; i < count; i++) {
       let x: number, y: number, z: number;
 
       if (i < haloCount) {
+        // Thin dust shell hugging the head/shoulder silhouette, biased
+        // toward the upper hemisphere like the reference's crown dust.
         const theta = Math.random() * Math.PI * 2;
-        const phi = Math.acos(THREE.MathUtils.lerp(-0.2, 1, Math.random()));
-        const r = HUMANOID.headRadius * THREE.MathUtils.lerp(1.05, 2.5, Math.pow(Math.random(), 1.5));
+        const phi = Math.acos(THREE.MathUtils.lerp(-0.5, 1, Math.pow(Math.random(), 0.85)));
+        const r =
+          HUMANOID.headRadius *
+          THREE.MathUtils.lerp(PARTICLES.haloRadiusMin, PARTICLES.haloRadiusMax, Math.random());
         x = Math.sin(phi) * Math.cos(theta) * r;
-        y = Math.cos(phi) * r * 1.3 + 0.55;
+        y = Math.cos(phi) * r + HEAD_LOCAL_CENTER_Y;
         z = Math.sin(phi) * Math.sin(theta) * r * 0.8;
       } else {
         x = (Math.random() - 0.5) * 20;
-        y = THREE.MathUtils.lerp(-2.6, 1.6, Math.random());
+        y = THREE.MathUtils.lerp(-2.2, 1.4, Math.random());
         z = THREE.MathUtils.lerp(-11, -2, Math.random());
       }
 

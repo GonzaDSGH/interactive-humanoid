@@ -72,7 +72,7 @@ export class Landscape {
         const material = new THREE.LineBasicMaterial({
           vertexColors: true,
           transparent: true,
-          opacity: THREE.MathUtils.lerp(0.9, 0.32, layerT) * (1 - li * 0.18),
+          opacity: THREE.MathUtils.lerp(1.0, 0.42, layerT) * (1 - li * 0.15),
           blending: THREE.AdditiveBlending,
           depthWrite: false,
         });
@@ -103,10 +103,11 @@ export class Landscape {
 
       for (let i = 0; i < points; i++) {
         const xN = i / (points - 1);
-        const edgeFade = Math.sin(Math.PI * xN);
+        // Rises toward the outer edges (visible beside the shoulders) and
+        // settles low through the center, where the figure occludes it.
+        const edgeRise = Math.pow(Math.abs(xN - 0.5) * 2.0, 0.75);
         const n = fbmNoise1D(xN * 3.4 + t, 4, ridge.seed);
-        const ridgeShape = Math.pow(Math.abs(edgeFade), 0.6) * Math.sign(edgeFade);
-        pos[i * 3 + 1] = ridge.baseY + n * ridge.amplitude * ridgeShape;
+        pos[i * 3 + 1] = ridge.baseY + n * ridge.amplitude * edgeRise + ridge.amplitude * 0.35 * edgeRise;
       }
 
       (ridge.line.geometry.attributes.position as THREE.BufferAttribute).needsUpdate = true;

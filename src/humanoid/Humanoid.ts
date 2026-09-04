@@ -8,9 +8,13 @@ import {
 import { createContourMaterial } from './materials/contourMaterial';
 import { createFaceCoreMaterial } from './materials/faceCoreMaterial';
 import { AttentionPose } from '../input/AttentionController';
-import { HUMANOID, IDLE, CONTOUR } from '../config';
+import { HUMANOID, IDLE, CONTOUR, FACE_CORE } from '../config';
 
 const EULER_ORDER: THREE.EulerOrder = 'YXZ';
+
+/** Camera layer the face core renders on, kept out of the bloom composite
+ *  (see SceneManager.renderOverlayLayer). */
+export const FACE_CORE_LAYER = 1;
 
 function applyPose(
   object: THREE.Object3D,
@@ -46,10 +50,18 @@ export class Humanoid {
   private idleSeed = Math.random() * 1000;
 
   constructor() {
+    const faceHoleCenterY = HUMANOID.headRadius * HUMANOID.headHeightScale * 0.82;
+    const faceHoleHalfWidth = HUMANOID.headRadius * FACE_CORE.coreWidth * 0.82;
+    const faceHoleHalfHeight = HUMANOID.headRadius * HUMANOID.headHeightScale * FACE_CORE.coreHeight * 0.74;
+
     this.headMaterial = createContourMaterial({
       bandFrequency: CONTOUR.headBandFrequency,
       bandSharpness: CONTOUR.headBandSharpness,
       centerlineStrength: 0,
+      faceHole: {
+        center: [0, faceHoleCenterY],
+        size: [faceHoleHalfWidth, faceHoleHalfHeight],
+      },
     });
     this.torsoMaterial = createContourMaterial({
       bandFrequency: CONTOUR.torsoBandFrequency,
@@ -74,6 +86,12 @@ export class Humanoid {
     this.neckGroup.add(this.headGroup);
 
     this.faceCoreMesh = new THREE.Mesh(buildFaceCoreGeometry(), this.faceMaterial);
+    // Rendered as a separate overlay pass, after bloom, on its own layer —
+    // see FACE_CORE_LAYER usage in main.ts and SceneManager.renderOverlayLayer.
+    this.faceCoreMesh.layers.set(FACE_CORE_LAYER);
+    // Draw after the head/neck contour shell so the core visually replaces
+    // the cyan lines within its oval rather than additively blending them.
+    this.faceCoreMesh.renderOrder = 5;
     this.headGroup.add(this.faceCoreMesh);
 
     this.group.add(this.torsoGroup);

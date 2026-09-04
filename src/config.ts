@@ -16,15 +16,16 @@ export const COLORS = {
 export const RENDER = {
   maxPixelRatio: 1.75,
   fov: 32,
-  cameraDistance: 6.4,
+  cameraDistance: 5.15,
+  cameraLookY: 0.32,
   near: 0.1,
   far: 60,
 };
 
 export const BLOOM = {
-  strength: 1.15,
-  radius: 0.55,
-  threshold: 0.18,
+  strength: 0.82,
+  radius: 0.32,
+  threshold: 0.32,
 };
 
 export const POST = {
@@ -73,53 +74,62 @@ export const IDLE = {
 export const HUMANOID = {
   headRadius: 0.62,
   headHeightScale: 1.18,
-  headDepthScale: 0.86,
+  headDepthScale: 0.74,
   neckRadius: 0.24,
   neckHeight: 0.34,
   shoulderWidth: 1.55,
-  shoulderDepth: 0.62,
+  shoulderDepth: 0.44,
   torsoHeight: 1.1,
   bustY: 0.0,
 };
 
+/** Local-space Y (inside `humanoid.group`, before its static centering
+ *  offset) of the head's visual center — used to align particles/HUD. */
+export const HEAD_LOCAL_CENTER_Y =
+  HUMANOID.neckHeight + HUMANOID.headRadius * HUMANOID.headHeightScale;
+
 export const CONTOUR = {
-  headBandFrequency: 34,
-  headBandSharpness: 0.42,
-  torsoBandFrequency: 26,
-  torsoBandSharpness: 0.4,
-  lineBrightness: 1.35,
-  rimPower: 2.2,
-  rimStrength: 2.4,
-  noiseAmount: 0.12,
+  headBandFrequency: 17,
+  headBandSharpness: 0.1,
+  torsoBandFrequency: 13,
+  torsoBandSharpness: 0.11,
+  lineBrightness: 1.0,
+  rimPower: 2.8,
+  rimStrength: 1.2,
+  noiseAmount: 0.045,
   noiseSpeed: 0.05,
-  centerlineWidth: 0.05,
-  centerlineStrength: 1.4,
+  centerlineWidth: 0.045,
+  centerlineStrength: 1.1,
 };
 
 export const FACE_CORE = {
-  coreWidth: 0.34,
-  coreHeight: 0.5,
+  // Must stay below ~0.74 so the radial falloff (which needs dist up to
+  // 1.35) completes before the patch UV edge (|p| = 1) — otherwise the
+  // ellipse gets hard-clipped into an irregular "kidney" shape.
+  coreWidth: 0.6,
+  coreHeight: 0.86,
   turbulenceSpeed: 0.09,
-  bandFrequency: 9.0,
+  bandFrequency: 11.0,
   bandStrength: 0.35,
-  intensity: 1.6,
+  intensity: 1.35,
 };
 
 export const LANDSCAPE = {
   layers: 5,
   pointsPerLine: 140,
-  width: 22,
-  baseY: -2.4,
+  width: 24,
+  baseY: -0.75,
   layerSpacing: 0.62,
   driftSpeed: 0.012,
   parallaxAmount: 0.06,
 };
 
 export const PARTICLES = {
-  count: 2600,
-  radius: 2.4,
-  spread: 1.6,
-  size: 2.4,
+  count: 1500,
+  haloFraction: 0.46,
+  haloRadiusMin: 1.16,
+  haloRadiusMax: 1.55,
+  size: 1.0,
   velocityInfluence: 0.4,
 };
 

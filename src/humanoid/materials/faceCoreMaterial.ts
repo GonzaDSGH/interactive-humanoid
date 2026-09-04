@@ -37,21 +37,20 @@ const fragmentShader = /* glsl */ `
     vec2 scaled = p / vec2(uCoreWidth, uCoreHeight);
     float dist = length(scaled);
 
-    float mask = exp(-pow(dist, 2.4) * 2.6);
-    mask *= smoothstep(1.35, 0.55, dist);
+    float alpha = 1.0 - smoothstep(0.68, 0.97, dist);
+    if (alpha < 0.006) discard;
 
-    float turb = fbm(vLocalPos * 3.2 + vec3(0.0, 0.0, uTime * uTurbulenceSpeed));
-    float bands = sin((p.y * uBandFrequency) + turb * 2.4 + uTime * 0.6) * 0.5 + 0.5;
+    float turb = fbm(vLocalPos * 1.6 + vec3(0.0, 0.0, uTime * uTurbulenceSpeed));
+    float bands = sin((p.y * uBandFrequency) + turb * 0.9 + uTime * 0.6) * 0.5 + 0.5;
     bands = mix(1.0, bands, uBandStrength);
 
-    float centerHeat = exp(-pow(dist, 2.0) * 3.2);
-    vec3 color = mix(uColorWarm, uColorHot, clamp(centerHeat * 1.4, 0.0, 1.0));
+    // Gentle radial falloff (broad, low-contrast) gives the center-weighted
+    // glow the reference has without a sharp gradient for bloom to ring on.
+    float radial = mix(0.55, 1.0, exp(-dist * dist * 0.9));
+    vec3 color = mix(uColorWarm, uColorHot, clamp(radial * bands, 0.0, 1.0));
+    float glow = uIntensity * radial * mix(0.85, 1.0, bands) * (0.9 + 0.15 * turb);
 
-    float intensity = mask * bands * uIntensity * (0.75 + 0.35 * turb);
-
-    if (intensity < 0.004) discard;
-
-    gl_FragColor = vec4(color * intensity, intensity);
+    gl_FragColor = vec4(color * glow, alpha);
   }
 `;
 

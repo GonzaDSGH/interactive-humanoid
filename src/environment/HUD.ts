@@ -1,5 +1,5 @@
 import * as THREE from 'three';
-import { COLORS, HUD as HUD_CONFIG, HUMANOID } from '../config';
+import { COLORS, HUD as HUD_CONFIG, HUMANOID, HEAD_LOCAL_CENTER_Y } from '../config';
 
 function buildArc(radius: number, start: number, length: number, segments: number): THREE.BufferGeometry {
   const positions = new Float32Array((segments + 1) * 3);
@@ -27,7 +27,7 @@ export class HUD {
 
   constructor() {
     const color = new THREE.Color(COLORS.cyanPrimary);
-    const centerY = HUMANOID.headRadius * HUMANOID.headHeightScale * 0.55;
+    const centerY = HEAD_LOCAL_CENTER_Y;
 
     for (let i = 0; i < HUD_CONFIG.ringCount; i++) {
       const radius = HUMANOID.headRadius * (1.5 + i * 0.42);
