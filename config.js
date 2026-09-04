@@ -14,9 +14,12 @@ const CONFIG = {
   // Particle counts per body-part field, at each adaptive-quality level.
   // ULTRA is attempted first; see sketch.js for the adaptive downgrade.
   QUALITY: {
-    ULTRA: { head: 34000, face: 11000, neck: 5000, shoulder: 38000, ambient: 900 },
-    HIGH: { head: 20000, face: 6500, neck: 3000, shoulder: 22000, ambient: 600 },
-    MEDIUM: { head: 10000, face: 3200, neck: 1600, shoulder: 11000, ambient: 350 },
+    // Face count roughly doubled vs. earlier tiers — the face is now a
+    // displacement-mapped relief (brow/eyes/nose/cheeks/chin), which needs
+    // real density to read clearly rather than a flat bright patch did.
+    ULTRA: { head: 32000, face: 22000, neck: 6000, shoulder: 40000, ambient: 900 },
+    HIGH: { head: 19000, face: 13000, neck: 3600, shoulder: 23000, ambient: 600 },
+    MEDIUM: { head: 9500, face: 6500, neck: 1800, shoulder: 11500, ambient: 350 },
   },
   QUALITY_ORDER: ['ULTRA', 'HIGH', 'MEDIUM'],
   // Sustained-FPS check: sample window, threshold, and cooldown between
@@ -51,10 +54,21 @@ const CONFIG = {
 
   // ---- Analytic body-part volumes (ellipsoid semi-axes + center) ------
   FIELD: {
-    head: { radii: [0.62, 0.66, 0.52], center: [0, 0.6, 0] },
-    face: { radii: [0.34, 0.42, 0.16], center: [0, 0.62, 0.42] },
-    neck: { topRadius: 0.24, bottomRadius: 0.3 },
-    shoulders: { radii: [1.02, 0.62, 0.46], center: [0, -0.5, 0] },
+    // Narrower + taller + deeper than before — a sphere-ish width/height
+    // ratio is exactly what made the head read as a round blob.
+    head: { radii: [0.56, 0.72, 0.62], center: [0, 0.6, 0] },
+    // The face is a displacement-mapped relief now (see humanoidField.js
+    // faceRelief/faceWidthLimit), not a flat oval patch: width/height span
+    // the face plane, center is its base plane position (headShape's own
+    // front-plane recess sits just behind this), reliefScale is how far
+    // the brow/nose/cheek/chin landmarks are allowed to push forward from
+    // that base plane.
+    face: { width: 0.4, height: 0.34, center: [0, 0.64, 0.5], reliefScale: 0.34 },
+    // widthRatio/depthRatio give the neck an elliptical (not circular)
+    // cross-section — wider side-to-side than front-to-back, like a real
+    // neck rather than a tube.
+    neck: { topRadius: 0.2, bottomRadius: 0.29, widthRatio: 1.2, depthRatio: 0.76 },
+    shoulders: { radii: [1.04, 0.62, 0.48], center: [0, -0.5, 0] },
   },
 
   PARTICLE_FIELD: {
@@ -62,8 +76,16 @@ const CONFIG = {
     haloDepth: 0.42,
     centerBias: 1.05,
     pointSizeRange: [0.85, 1.9],
-    facePointSizeRange: [0.8, 1.7],
+    facePointSizeRange: [0.85, 1.55],
     brightnessRange: [0.4, 1.0],
+    // Narrower than the old flat-patch range on purpose: with a real
+    // relief field now driving depth, a wide per-particle brightness
+    // lottery on top of it produces occasional outlier-bright particles
+    // that, under sparse sampling, connect into false "line" artifacts
+    // rather than reading as soft shading. Depth cues the anatomy instead
+    // (the shader's perspective size falloff already makes closer/raised
+    // particles read subtly larger); brightness just needs to stay gentle.
+    faceBrightnessRange: [0.55, 0.95],
     faceShiftScale: 1.6,
     flowInfluence: 0.075,
     flowInfluenceByPart: { shoulder: 0.35, neck: 0.65, head: 1.0 },
