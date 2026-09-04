@@ -26,7 +26,7 @@ export class SceneManager {
 
     this.scene = new THREE.Scene();
     this.scene.background = new THREE.Color(COLORS.background);
-    this.scene.fog = new THREE.FogExp2(COLORS.background, 0.052);
+    this.scene.fog = new THREE.FogExp2(COLORS.background, 0.045);
 
     this.camera = new THREE.PerspectiveCamera(RENDER.fov, 1, RENDER.near, RENDER.far);
     this.camera.position.set(0, RENDER.cameraLookY, RENDER.cameraDistance);

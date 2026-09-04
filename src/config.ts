@@ -6,11 +6,16 @@
 export const COLORS = {
   background: 0x03060a,
   backgroundBottom: 0x05090f,
+  backgroundTop: 0x060c16,
   cyanPrimary: 0x00dfff,
   cyanSecondary: 0x008fbf,
   cyanDim: 0x035066,
+  /** Near-white hot edge for the sharpest grazing-angle rim highlight. */
+  cyanHot: 0xd6faff,
   orange: 0xff8a20,
   hotYellow: 0xffc04a,
+  /** Warm-white lens-highlight for the face core's bezel edge. */
+  warmWhite: 0xfff1d9,
 };
 
 export const RENDER = {
@@ -73,12 +78,20 @@ export const IDLE = {
 
 export const HUMANOID = {
   headRadius: 0.62,
-  headHeightScale: 1.18,
-  headDepthScale: 0.74,
+  headHeightScale: 1.04,
+  headDepthScale: 0.8,
+  /** How far below the head-local origin (y=0, the neck attachment point)
+   *  the sculpted geometry's unit-sphere pole sits — see sculptHeadRadius
+   *  and headSculptY. Kept slightly under 1 so the pole tucks inside the
+   *  neck's own volume instead of exposing a visible cone tip. */
+  headTranslateFactor: 0.94,
   neckRadius: 0.24,
   neckHeight: 0.34,
-  shoulderWidth: 1.55,
-  shoulderDepth: 0.44,
+  /** Extra neck height hidden inside the head's own volume, so no seam
+   *  is visible where the sculpted skull's tapered base meets the neck. */
+  neckOverlap: 0.16,
+  shoulderWidth: 1.72,
+  shoulderDepth: 0.5,
   torsoHeight: 1.1,
   bustY: 0.0,
 };
@@ -100,6 +113,12 @@ export const CONTOUR = {
   noiseSpeed: 0.05,
   centerlineWidth: 0.045,
   centerlineStrength: 1.1,
+  /** Faint translucent base fill so the shell reads as semi-transparent
+   *  material, not just a line drawing over black. */
+  shellFill: 0.04,
+  /** Secondary fine circuit-line layer, phase-locked to the primary bands. */
+  microFrequency: 3.4,
+  microStrength: 0.13,
 };
 
 export const FACE_CORE = {
@@ -110,8 +129,18 @@ export const FACE_CORE = {
   coreHeight: 0.86,
   turbulenceSpeed: 0.09,
   bandFrequency: 11.0,
-  bandStrength: 0.35,
+  bandStrength: 0.3,
   intensity: 1.35,
+  /** Concentric reactor-iris rings emanating from the core center. */
+  ringFrequency: 5.5,
+  ringSpeed: 0.16,
+  ringStrength: 0.3,
+  /** Faint rotating mechanical iris spokes. */
+  spokeCount: 10,
+  spokeStrength: 0.14,
+  spokeSpeed: 0.05,
+  /** Bright lens bezel right at the core's outer edge. */
+  bezelStrength: 0.55,
 };
 
 export const LANDSCAPE = {
@@ -131,10 +160,33 @@ export const PARTICLES = {
   haloRadiusMax: 1.55,
   size: 1.0,
   velocityInfluence: 0.4,
+  /** Small subset rendered as multi-phase velocity-lag "trail sparks" —
+   *  a cheap 3-echo motion streak rather than a true per-particle history.
+   *  All three stay slower than the main dust's own damping (lambda 3)
+   *  so the sparks genuinely trail behind rather than lead. */
+  trailCount: 150,
+  trailLagFast: 2.3,
+  trailLagMedium: 1.3,
+  trailLagSlow: 0.65,
 };
 
 export const HUD = {
   ringCount: 3,
   ringOpacity: 0.16,
   rotationSpeed: 0.015,
+};
+
+/** Layered soft-glow depth haze standing in for volumetric atmosphere —
+ *  large, low-opacity radial gradients at increasing depth behind the
+ *  figure. Ordered near to far; `parallax` scales how much each layer
+ *  drifts with the pointer (nearer layers move more). */
+export const ATMOSPHERE = {
+  backdropTop: COLORS.backgroundTop,
+  backdropMid: COLORS.background,
+  backdropBottom: COLORS.backgroundBottom,
+  layers: [
+    { color: COLORS.cyanDim, opacity: 0.1, size: 10, x: 0, y: 0.6, z: -4.5, parallax: 0.05 },
+    { color: COLORS.cyanDim, opacity: 0.09, size: 15, x: -2.5, y: 1.2, z: -7, parallax: 0.035 },
+    { color: COLORS.orange, opacity: 0.035, size: 9, x: 0, y: 0.3, z: -3, parallax: 0.06 },
+  ],
 };

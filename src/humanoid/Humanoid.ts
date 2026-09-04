@@ -4,9 +4,12 @@ import {
   buildTorsoGeometry,
   buildNeckGeometry,
   buildFaceCoreGeometry,
+  buildCollarRingGeometry,
+  headSculptY,
 } from './geometry';
 import { createContourMaterial } from './materials/contourMaterial';
 import { createFaceCoreMaterial } from './materials/faceCoreMaterial';
+import { createAccentMaterial } from './materials/accentMaterial';
 import { AttentionPose } from '../input/AttentionController';
 import { HUMANOID, IDLE, CONTOUR, FACE_CORE } from '../config';
 
@@ -36,6 +39,7 @@ export class Humanoid {
   private readonly shouldersMesh: THREE.Mesh;
   private readonly neckGroup = new THREE.Group();
   private readonly neckMesh: THREE.Mesh;
+  private readonly collarMesh: THREE.Mesh;
   private readonly headGroup = new THREE.Group();
   private readonly headMesh: THREE.Mesh;
   private readonly faceCoreMesh: THREE.Mesh;
@@ -43,6 +47,7 @@ export class Humanoid {
   private readonly headMaterial: THREE.ShaderMaterial;
   private readonly torsoMaterial: THREE.ShaderMaterial;
   private readonly faceMaterial: THREE.ShaderMaterial;
+  private readonly accentMaterial: THREE.ShaderMaterial;
 
   private clock = 0;
   private readonly scratchEuler = new THREE.Euler();
@@ -50,14 +55,18 @@ export class Humanoid {
   private idleSeed = Math.random() * 1000;
 
   constructor() {
-    const faceHoleCenterY = HUMANOID.headRadius * HUMANOID.headHeightScale * 0.82;
-    const faceHoleHalfWidth = HUMANOID.headRadius * FACE_CORE.coreWidth * 0.82;
-    const faceHoleHalfHeight = HUMANOID.headRadius * HUMANOID.headHeightScale * FACE_CORE.coreHeight * 0.74;
+    // The face plate/socket is sculpted centered around unit-sphere
+    // latitude ny=0.02 (see sculptHeadRadius) — convert that to the same
+    // head-local Y space the geometry itself uses.
+    const faceHoleCenterY = headSculptY(0.02);
+    const faceHoleHalfWidth = HUMANOID.headRadius * FACE_CORE.coreWidth * 0.78;
+    const faceHoleHalfHeight = HUMANOID.headRadius * HUMANOID.headHeightScale * FACE_CORE.coreHeight * 0.92;
 
     this.headMaterial = createContourMaterial({
       bandFrequency: CONTOUR.headBandFrequency,
       bandSharpness: CONTOUR.headBandSharpness,
       centerlineStrength: 0,
+      seamAccents: true,
       faceHole: {
         center: [0, faceHoleCenterY],
         size: [faceHoleHalfWidth, faceHoleHalfHeight],
@@ -69,16 +78,25 @@ export class Humanoid {
       centerlineStrength: CONTOUR.centerlineStrength,
     });
     this.faceMaterial = createFaceCoreMaterial();
+    this.accentMaterial = createAccentMaterial();
 
     this.shouldersMesh = new THREE.Mesh(buildTorsoGeometry(), this.torsoMaterial);
     this.shouldersMesh.position.set(0, -HUMANOID.torsoHeight, 0);
     this.torsoGroup.add(this.shouldersMesh);
 
+    // The neck geometry already spans local y = 0 (collar) .. neckHeight +
+    // overlap (its own origin, no extra offset needed) — the overlap
+    // portion pokes up into the head's lower volume so no seam is ever
+    // visible at the join regardless of the sculpted skull's exact shape.
     this.neckMesh = new THREE.Mesh(buildNeckGeometry(), this.headMaterial);
-    this.neckMesh.position.set(0, HUMANOID.neckHeight / 2, 0);
     this.neckGroup.add(this.neckMesh);
     this.neckGroup.position.set(0, HUMANOID.torsoHeight, 0);
     this.shouldersMesh.add(this.neckGroup);
+
+    this.collarMesh = new THREE.Mesh(buildCollarRingGeometry(), this.accentMaterial);
+    this.collarMesh.rotation.x = Math.PI / 2;
+    this.collarMesh.position.y = 0.02;
+    this.neckGroup.add(this.collarMesh);
 
     this.headMesh = new THREE.Mesh(buildHeadGeometry(), this.headMaterial);
     this.headGroup.add(this.headMesh);
@@ -159,15 +177,18 @@ export class Humanoid {
     this.headMaterial.uniforms.uTime.value = t;
     this.torsoMaterial.uniforms.uTime.value = t;
     this.faceMaterial.uniforms.uTime.value = t;
+    this.accentMaterial.uniforms.uTime.value = t;
   }
 
   dispose(): void {
     this.headMesh.geometry.dispose();
     this.shouldersMesh.geometry.dispose();
     this.neckMesh.geometry.dispose();
+    this.collarMesh.geometry.dispose();
     this.faceCoreMesh.geometry.dispose();
     this.headMaterial.dispose();
     this.torsoMaterial.dispose();
     this.faceMaterial.dispose();
+    this.accentMaterial.dispose();
   }
 }

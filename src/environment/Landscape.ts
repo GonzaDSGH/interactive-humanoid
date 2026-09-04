@@ -32,7 +32,7 @@ export class Landscape {
     const orange = new THREE.Color(COLORS.orange);
 
     for (let layer = 0; layer < LANDSCAPE.layers; layer++) {
-      const depth = -3.2 - layer * LANDSCAPE.layerSpacing * 2.2;
+      const depth = -4.6 - layer * LANDSCAPE.layerSpacing * 2.2;
       const layerT = layer / (LANDSCAPE.layers - 1);
       const linesInLayer = 3;
 
@@ -45,7 +45,7 @@ export class Landscape {
         const positions = new Float32Array(points * 3);
         const colors = new Float32Array(points * 3);
 
-        const brightness = THREE.MathUtils.lerp(0.9, 0.28, layerT);
+        const brightness = THREE.MathUtils.lerp(0.68, 0.2, layerT);
         const baseColor = cyanDim.clone().lerp(cyan, brightness);
 
         for (let i = 0; i < points; i++) {
@@ -72,7 +72,7 @@ export class Landscape {
         const material = new THREE.LineBasicMaterial({
           vertexColors: true,
           transparent: true,
-          opacity: THREE.MathUtils.lerp(1.0, 0.42, layerT) * (1 - li * 0.15),
+          opacity: THREE.MathUtils.lerp(0.62, 0.24, layerT) * (1 - li * 0.15),
           blending: THREE.AdditiveBlending,
           depthWrite: false,
         });

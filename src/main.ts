@@ -4,6 +4,7 @@ import { PointerTracker } from './input/PointerTracker';
 import { AttentionController } from './input/AttentionController';
 import { Humanoid, FACE_CORE_LAYER } from './humanoid/Humanoid';
 import { Landscape } from './environment/Landscape';
+import { Atmosphere } from './environment/Atmosphere';
 import { HUD } from './environment/HUD';
 import { Particles } from './environment/Particles';
 import { DebugPanel } from './debug/DebugPanel';
@@ -16,12 +17,15 @@ const sceneManager = new SceneManager(canvas);
 const pointer = new PointerTracker(canvas);
 const attention = new AttentionController(pointer);
 const humanoid = new Humanoid();
+const atmosphere = new Atmosphere();
 const landscape = new Landscape();
 const hud = new HUD();
 const particles = new Particles();
 const debugPanel = new DebugPanel();
 
 landscape.group.position.z = 0;
+// Atmosphere first — it renders behind everything else (renderOrder -10).
+sceneManager.scene.add(atmosphere.group);
 sceneManager.scene.add(humanoid.group);
 sceneManager.scene.add(landscape.group);
 // HUD and particles are parented to the humanoid's stable (non-rotating)
@@ -45,6 +49,7 @@ function animate(): void {
 
   const pose = attention.update(dt);
   humanoid.update(dt, pose);
+  atmosphere.update(dt, pointer.target.x, pointer.target.y);
   landscape.update(dt, pointer.target.x, pointer.target.y);
   hud.update(dt, pointer.target.x, pointer.target.y);
   particles.update(dt, pointer.velocity.x, pointer.velocity.y);
