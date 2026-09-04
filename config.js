@@ -68,7 +68,9 @@ const CONFIG = {
     // cross-section — wider side-to-side than front-to-back, like a real
     // neck rather than a tube.
     neck: { topRadius: 0.2, bottomRadius: 0.29, widthRatio: 1.2, depthRatio: 0.76 },
-    shoulders: { radii: [1.04, 0.62, 0.48], center: [0, -0.5, 0] },
+    // Widened slightly for stronger bust presence (closer to the ~2.2x
+    // head-width anthropometric shoulder span the reference asked for).
+    shoulders: { radii: [1.14, 0.62, 0.5], center: [0, -0.5, 0] },
   },
 
   PARTICLE_FIELD: {

@@ -147,29 +147,37 @@ class AttentionController {
     this.pose.faceShift.x = clamp(fx, -1, 1) * L.faceShift;
     this.pose.faceShift.y = clamp(fy, -1, 1) * L.faceShift;
 
+    // Pitch sign: pose.*.pitch feeds a rotation about local +X (see
+    // particleSystem.js Pivots._eulerYXZ). Under that convention a
+    // *positive* rotation about +X tips the face's +Z-facing normal
+    // toward -Y (down) — so a naive `+hy * L.pitch` made pointer-up
+    // (positive ny, see sketch.js) produce a downward gaze. Negated at
+    // each stage so pointer-up looks up, pointer-down looks down; hx/hy/
+    // nx/ny/sx/sy stay the shared unscaled cascade values other stages
+    // (and roll's yaw*pitch coupling) chain from, unaffected by this.
     const hx = this.headX.update(dt, ax);
     const hy = this.headY.update(dt, ay);
     this.pose.head.yaw = hx * L.head.yaw;
-    this.pose.head.pitch = hy * L.head.pitch;
+    this.pose.head.pitch = -hy * L.head.pitch;
     this.pose.head.roll = clamp(-hx * hy, -1, 1) * L.head.roll;
 
     const nx = this.neckX.update(dt, hx);
     const ny = this.neckY.update(dt, hy);
     this.pose.neck.yaw = nx * L.neck.yaw;
-    this.pose.neck.pitch = ny * L.neck.pitch;
+    this.pose.neck.pitch = -ny * L.neck.pitch;
     this.pose.neck.roll = clamp(-nx * ny, -1, 1) * L.neck.roll;
 
     const sx = this.shoulderX.update(dt, nx);
     const sy = this.shoulderY.update(dt, ny);
     this.pose.shoulders.yaw = sx * L.shoulders.yaw;
-    this.pose.shoulders.pitch = sy * L.shoulders.pitch;
+    this.pose.shoulders.pitch = -sy * L.shoulders.pitch;
     this.pose.shoulders.roll = clamp(-sx * sy, -1, 1) * L.shoulders.roll;
     this.pose.shoulders.bob = sy * L.shoulders.bob;
 
     const tx = this.torsoX.update(dt, sx);
     const ty = this.torsoY.update(dt, sy);
     this.pose.torso.yaw = tx * L.torso.yaw;
-    this.pose.torso.pitch = ty * L.torso.pitch;
+    this.pose.torso.pitch = -ty * L.torso.pitch;
     this.pose.torso.roll = clamp(-tx * ty, -1, 1) * L.torso.roll;
 
     this.pose.pointerSpeed = this.pointer.speed;

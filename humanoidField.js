@@ -1,10 +1,14 @@
 /**
  * Analytic humanoid volume + particle sampling. No mesh is ever built —
- * these functions only decide WHERE particles are allowed to exist. Every
- * body part is sampled as a dense solid (uniform-ish through the interior,
- * not a thin shell) with a soft, sparse halo just past its boundary, so
- * the figure reads as volumetric digital matter with a fuzzy edge rather
- * than a crisp geometric cutout.
+ * these functions only decide WHERE particles are allowed to exist, and
+ * how bright/large each one is. Every region below (cranial vault, face
+ * plane, neck, clavicles/trapezius, deltoid/thorax) is its own weighted
+ * field rather than one broad head mass and one broad torso mass: each
+ * has its own shape contribution AND its own density salience, so
+ * particles concentrate at anatomical landmarks (brow, orbital rim, nasal
+ * bridge, cheekbones, jaw contour, clavicles, deltoid edges) instead of
+ * being spread uniformly over solid angle / area and only differing in
+ * brightness.
  */
 
 const PART = { SHOULDER: 0, NECK: 1, HEAD: 2 };
@@ -23,21 +27,25 @@ function lerp(a, b, t) {
   return a + (b - a) * t;
 }
 
-/**
- * Direction-dependent radius multiplier for the SKULL volume only — the
- * face's own landmarks (brow, eyes, nose, cheekbones, mouth, chin) are no
- * longer sculpted here. They live in faceRelief() below as a proper
- * displacement field, because a spherical radius multiplier averaged over
- * solid angle cannot place a feature precisely enough to read as a face;
- * it can only ever read as a lumpy ball. This function's only job is the
- * skull silhouette: a rounder, fuller back/crown, defined temples, and —
- * critically — a flattened, RECESSED front face-plane that gets out of the
- * way so faceRelief's own protrusions (the nose especially) are what the
- * viewer sees, not a doubled-up mass of skull-plus-face.
- */
+function clamp01(x) {
+  return Math.max(0, Math.min(1, x));
+}
+
+// ---------------------------------------------------------------------
+// CRANIUM — frontal bone / cranial vault / temporal region / occipital.
+// The face's own landmarks (brow, eyes, nose, cheeks, mouth, jaw contour)
+// are NOT sculpted here — see faceRelief() — because a spherical radius
+// multiplier averaged over solid angle cannot place a feature precisely
+// enough to read as a face; it can only ever read as a lumpy ball. This
+// function's job is the skull silhouette only: a rounder, fuller
+// occipital back, a distinct temporal region, and a flattened, RECESSED
+// frontal/facial plane that gets out of the way so faceRelief's own
+// protrusions (the nose especially) are what the viewer sees.
+// ---------------------------------------------------------------------
 function headShape(nx, ny, nz) {
   let r = 1.0;
 
+  // Cranial vault: flattens toward the crown rather than a perfect dome.
   const crownFlatten = smoothstep(0.6, 1.0, ny);
   r -= 0.16 * crownFlatten;
 
@@ -48,20 +56,22 @@ function headShape(nx, ny, nz) {
   const craniumBack = smoothstep(0.15, -0.7, nz);
   r += 0.24 * craniumHeight * craniumBack;
 
+  // Temporal region — the transition band at ear/temple height.
   const templeBand = gaussianMask(ny, 0.02, 0.24);
   const sideness = smoothstep(0.2, 0.65, Math.abs(nx));
   r += 0.15 * templeBand * sideness;
 
-  // Recess the front face-plane a little below the skull's natural radius
-  // — the "canvas" faceRelief paints onto. Kept modest: too deep a cut
-  // hollows out the whole front of the skull (barely any skull particles
-  // land in the visible front silhouette, reading as sparse/empty) rather
-  // than just making room for the nose/brow/chin to read as protruding
-  // above a still-solid base.
+  // Frontal/facial plane recess — the "canvas" faceRelief paints onto.
+  // Kept modest: too deep a cut hollows out the whole front of the skull
+  // (barely any skull particles land in the visible front silhouette)
+  // rather than just making room for the nose/brow/chin to read as
+  // protruding above a still-solid base.
   const facePlaneFront = smoothstep(0.12, 0.55, nz);
   const facePlaneHeight = 1 - smoothstep(0.15, 0.75, Math.abs(ny - 0.0));
   r -= 0.13 * facePlaneFront * facePlaneHeight;
 
+  // Mandibular region / jaw taper (the skull's own contribution — the
+  // face relief adds a second, sharper mandible contour on top of this).
   const jawMask = smoothstep(0.2, -0.78, ny) * smoothstep(-0.15, 0.5, nz);
   r -= 0.32 * jawMask;
 
@@ -74,30 +84,49 @@ function headShape(nx, ny, nz) {
   return Math.max(0.32, r);
 }
 
+/** Density salience for the skull: landmark transitions (temporal band,
+ *  jaw edge, the seam between the recessed facial plane and the fuller
+ *  occipital mass, the crown edge) get more particles than the smooth
+ *  filler volume between them. Returned in roughly [1, 2.9]. */
+function headSalience(nx, ny, nz) {
+  const templeBand = gaussianMask(ny, 0.02, 0.22) * smoothstep(0.2, 0.65, Math.abs(nx));
+  const jawEdge = gaussianMask(ny, -0.45, 0.2) * smoothstep(-0.1, 0.5, nz);
+  return 1 + 0.4 * templeBand + 0.45 * jawEdge;
+}
+const HEAD_MAX_SALIENCE = 1.9;
+
+// ---------------------------------------------------------------------
+// FACE — a proper displacement field over (u, v) face-plane coordinates,
+// not a radius multiplier: brow, orbital cavities, nasal bridge/tip,
+// zygomatic arches, infraorbital/cheek plane, philtrum, mouth plane,
+// mandibular contour and chin are each placed at an explicit (u, v)
+// location with an explicit sign (additive protrusion or subtractive
+// depression) — the only way to get precise, recognizably-human
+// placement out of a particle scatter. v: 1 = forehead top, -1 = chin.
+// ---------------------------------------------------------------------
+
 /**
- * Face silhouette taper as seen from the front: cheek-width up top,
- * narrowing steadily into the jaw and chin. This alone (before any relief
- * is added) is what keeps the face patch from reading as an oval blob.
- * v: 1 = forehead top, -1 = chin bottom.
+ * Face silhouette taper as seen from the front. The zygomatic arches
+ * (cheekbones) are the face's widest point — wider than the forehead,
+ * which narrows again down through the jaw to the chin. A monotonic
+ * top-to-bottom taper (an earlier version of this file) put the widest
+ * point at the forehead, which reads anatomically wrong.
  */
 function faceWidthLimit(v) {
-  if (v > 0.2) return lerp(0.86, 1.0, smoothstep(0.2, 0.85, v));
-  const t = smoothstep(0.2, -0.92, v);
-  return lerp(1.0, 0.34, t);
+  if (v > -0.03) {
+    const t = smoothstep(0.85, -0.03, v);
+    return lerp(0.8, 1.0, t);
+  }
+  const t = smoothstep(-0.03, -0.92, v);
+  return lerp(1.0, 0.32, t);
 }
 
 /**
- * The face's actual anatomy: a proper displacement field over (u, v) face-
- * plane coordinates, not a radius multiplier. Every landmark — brow ridge,
- * eye sockets, nose bridge/tip, cheekbones, philtrum, mouth-plane, chin —
- * is placed at an explicit (u, v) location with an explicit sign (additive
- * protrusion or subtractive depression), which is the only way to get
- * precise, recognizably-human placement out of a particle scatter.
- *
  * Returns { z: forward displacement (face-local units), feature: signed
- * "how strong a landmark is this point on" used to bias brightness/size so
- * ridges read brighter and sockets read dimmer — an implicit shading cue,
- * since the renderer itself has no lighting model.
+ * "how strong a landmark is this point on" }. `feature` drives both the
+ * implicit shading cue (ridges brighter, sockets dimmer — this unlit
+ * renderer has no lighting model) and the face's own density salience
+ * (sampleFace importance-samples toward high |feature|).
  */
 function faceRelief(u, v) {
   let z = 0;
@@ -106,32 +135,34 @@ function faceRelief(u, v) {
   const dome = Math.sqrt(Math.max(0, 1 - u * u * 0.85 - v * v * 0.3));
   z += 0.5 * dome;
 
+  // Frontal bone / forehead plane.
   const foreheadMask = gaussianMask(v, 0.58, 0.3);
   z += 0.035 * foreheadMask;
 
-  // Two separate brow bumps (one per eye) rather than one bar spanning the
-  // full width — a continuous bar reads as a single hard line once
-  // sparsely sampled; two softer, localized bumps read as "brow ridge
-  // above each eye" instead, and integrate better with the eye sockets
-  // directly beneath them.
+  // Supraorbital ridge (brow) — two separate bumps, one per eye, rather
+  // than one bar spanning the full width: a continuous bar reads as a
+  // single hard line once sparsely sampled, while two softer, localized
+  // bumps read as "brow ridge above each eye" and integrate with the
+  // orbital cavities directly beneath them.
   const browL = gaussianMask(u, -0.32, 0.19) * gaussianMask(v, 0.24, 0.08);
   const browR = gaussianMask(u, 0.32, 0.19) * gaussianMask(v, 0.24, 0.08);
   const browMask = browL + browR;
   z += 0.055 * browMask;
   feature += 0.3 * browMask;
 
+  // Orbital cavities (eye sockets) — the strongest depth cue on the face.
   const eyeL = gaussianMask(u, -0.36, 0.15) * gaussianMask(v, 0.12, 0.1);
   const eyeR = gaussianMask(u, 0.36, 0.15) * gaussianMask(v, 0.12, 0.1);
   const eyeMask = eyeL + eyeR;
   z -= 0.19 * eyeMask;
   feature -= 0.75 * eyeMask;
 
-  // gaussianMask(u, 0, width) is exactly 1 whenever u===0 REGARDLESS of
-  // width — width only controls how fast it falls off away from center.
-  // That means noseRun alone controls the ridge's vertical extent; it must
-  // stay tightly confined to the actual bridge-to-tip span (roughly
-  // "between/just under the eyes" down to "the tip"), or the ridge reads
-  // as a seam running the full face height instead of a nose.
+  // Nasal bridge / dorsum + tip. NOTE: gaussianMask(u, 0, width) is
+  // exactly 1 whenever u===0 REGARDLESS of width — width only controls
+  // fall-off away from center. That means noseRun alone controls the
+  // ridge's vertical extent; it must stay tightly confined to the actual
+  // bridge-to-tip span or the ridge reads as a seam running the full
+  // face height instead of a nose (found and fixed while tuning this).
   const noseWidth = lerp(0.04, 0.1, smoothstep(0.06, -0.14, v));
   const noseRun = smoothstep(-0.52, -0.32, v) * (1 - smoothstep(0.02, 0.17, v));
   const noseMask = gaussianMask(u, 0, noseWidth) * noseRun;
@@ -139,30 +170,154 @@ function faceRelief(u, v) {
   z += 0.24 * noseMask * (0.5 + 0.85 * noseTip);
   feature += 0.9 * noseMask * (0.35 + noseTip);
 
-  const cheekL = gaussianMask(u, -0.44, 0.16) * gaussianMask(v, -0.07, 0.17);
-  const cheekR = gaussianMask(u, 0.44, 0.16) * gaussianMask(v, -0.07, 0.17);
+  // Zygomatic arches (cheekbones) — higher and more lateral than the
+  // infraorbital/cheek plane beneath them; the face's structural corners.
+  // Zygomatic arches, infraorbital/cheek plane, mandibular contour and
+  // the mental protuberance all stay deliberately subtle relative to the
+  // brow/orbital/nasal cluster above: an earlier pass gave them magnitude
+  // and feature-weight on par with the eyes/nose, and it diluted the
+  // signal that was actually making the face read as a face — spreading
+  // the importance-sampling density budget over many medium landmarks
+  // instead of concentrating it on the few that matter most for instant
+  // recognition. These add real structure without competing for it.
+  const zygoL = gaussianMask(u, -0.5, 0.11) * gaussianMask(v, 0.02, 0.1);
+  const zygoR = gaussianMask(u, 0.5, 0.11) * gaussianMask(v, 0.02, 0.1);
+  const zygoMask = zygoL + zygoR;
+  z += 0.05 * zygoMask;
+  feature += 0.18 * zygoMask;
+
+  const cheekL = gaussianMask(u, -0.4, 0.17) * gaussianMask(v, -0.13, 0.16);
+  const cheekR = gaussianMask(u, 0.4, 0.17) * gaussianMask(v, -0.13, 0.16);
   const cheekMask = cheekL + cheekR;
-  z += 0.095 * cheekMask;
-  feature += 0.4 * cheekMask;
+  z += 0.04 * cheekMask;
+  feature += 0.1 * cheekMask;
 
   const philtrum = gaussianMask(u, 0, 0.04) * gaussianMask(v, -0.29, 0.07);
   z -= 0.028 * philtrum;
 
   const mouthMask = gaussianMask(v, -0.4, 0.065) * (1 - smoothstep(0.24, 0.42, Math.abs(u)));
   z += 0.026 * mouthMask;
-  feature += 0.22 * mouthMask;
+  feature += 0.16 * mouthMask;
+
+  const wLimitHere = faceWidthLimit(v);
+  const edgeProximity = smoothstep(0.6, 0.94, Math.abs(u) / Math.max(0.001, wLimitHere));
+  const jawlineRun = gaussianMask(v, -0.55, 0.28) * (1 - smoothstep(0.05, 0.35, v));
+  const mandibleMask = edgeProximity * jawlineRun;
+  z += 0.032 * mandibleMask;
+  feature += 0.16 * mandibleMask;
 
   const chinMask = gaussianMask(v, -0.74, 0.13) * (1 - smoothstep(0.2, 0.4, Math.abs(u)));
-  z += 0.095 * chinMask;
-  feature += 0.45 * chinMask;
+  z += 0.08 * chinMask;
+  feature += 0.32 * chinMask;
+
+  const mentalMask = gaussianMask(u, 0, 0.09) * gaussianMask(v, -0.8, 0.075);
+  z += 0.025 * mentalMask;
+  feature += 0.16 * mentalMask;
 
   return { z, feature };
 }
 
-/** Direction-dependent radius multiplier for the shoulder/chest/clavicle
- *  volume: a defined deltoid bulge, a subtle sternum ridge, and a sharper
- *  clavicle line — the strongest single readable landmark where the neck
- *  meets the shoulders. */
+// ---------------------------------------------------------------------
+// NECK — elliptical, anatomically directional column: anterior mass with
+// a laryngeal bulge, lateral transition, a suggestion of the paired
+// sternocleidomastoid (SCM) diagonals running from behind the jaw down
+// to the sternal/clavicular base, and a flare into the trapezius mass.
+// ---------------------------------------------------------------------
+
+/**
+ * How close a sampled (rawAngle, tNorm) point is to either SCM line.
+ * rawAngle is the pre-ellipse-scaling circle parameter (0 = pure side,
+ * PI/2 = pure front, PI = pure other side — see sampleNeck), tNorm is
+ * height fraction (0 = base/sternum, 1 = top/jaw). A real SCM runs from a
+ * lateral, slightly-forward attachment near the mastoid (behind the ear,
+ * high on the neck) diagonally down to a near-frontal attachment at the
+ * sternum/clavicle — i.e. more lateral at the top, more frontal at the
+ * base, on both the left and right lateral-front quadrants.
+ */
+function scmProximity(rawAngle, tNorm) {
+  const idealRight = lerp(1.35, 0.42, tNorm);
+  const idealLeft = Math.PI - idealRight;
+  const diffR = Math.abs(rawAngle - idealRight);
+  const diffL = Math.abs(rawAngle - idealLeft);
+  const diffMin = Math.min(diffR, diffL);
+  return gaussianMask(diffMin, 0, 0.22) * smoothstep(0.03, 0.16, tNorm) * (1 - smoothstep(0.85, 0.98, tNorm));
+}
+
+/**
+ * The neck as an elliptical (wider left-right than front-back) tapered
+ * column with a subtle front throat-flatten, a small anterior laryngeal
+ * bulge, paired SCM diagonals, and a flare at its base into the
+ * trapezius/clavicle mass — a real neck reads nothing like a circular
+ * tube, which is what a uniform-angle cylinder sample would give.
+ */
+function sampleNeck(buf, start, count, height) {
+  const N = CONFIG.FIELD.neck;
+  const pf = CONFIG.PARTICLE_FIELD;
+  const haloCount = Math.floor(count * pf.haloFraction);
+  const coreCount = count - haloCount;
+  const overlapBottom = height * 0.5;
+  const overlapTop = height * 0.68;
+  const maxSalience = 2.3;
+
+  for (let k = 0; k < count; k++) {
+    const i = start + k;
+    const y = lerp(-overlapBottom, height + overlapTop, Math.random());
+    const yClamped = Math.min(height, Math.max(0, y));
+    const tNorm = yClamped / height;
+
+    // Importance-sample the angle toward the SCM lines and the base/
+    // trapezius transition rather than uniformly around the column.
+    let angle = 0;
+    let scm = 0;
+    let tries = 0;
+    do {
+      angle = Math.random() * Math.PI * 2;
+      const rawAngle = angle < 0 ? angle + Math.PI * 2 : angle;
+      scm = scmProximity(rawAngle, tNorm);
+      const baseEdge = gaussianMask(tNorm, 0.1, 0.14);
+      const weight = 1 + 0.6 * scm + 0.3 * baseEdge;
+      tries++;
+      if (tries >= 20 || Math.random() * maxSalience <= weight) break;
+    } while (true);
+
+    const flare = smoothstep(0.22, 0, tNorm) * 0.35;
+    let baseR = lerp(N.bottomRadius, N.topRadius, tNorm) + flare * N.bottomRadius;
+    baseR *= 1 + 0.035 * scm;
+
+    const isHalo = k >= coreCount;
+    const rFrac = isHalo ? haloFractionSample(pf.haloDepth) : Math.pow(Math.random(), pf.centerBias / 2);
+
+    let ex = Math.cos(angle) * N.widthRatio;
+    let ez = Math.sin(angle) * N.depthRatio;
+    if (ez > 0) {
+      ez -= ez * smoothstep(0.3, 0.9, ez / N.depthRatio) * 0.22;
+      // Laryngeal prominence: a small anterior bulge roughly mid-upper
+      // neck, right where the throat-flatten would otherwise be flattest.
+      const larynx = gaussianMask(tNorm, 0.62, 0.14) * smoothstep(0.55, 0.95, ez / N.depthRatio);
+      ez += larynx * 0.09;
+    }
+
+    const r = baseR * rFrac;
+    const x = ex * r;
+    const z = ez * r;
+
+    // Depth cue: frontal mass (throat/larynx side) reads slightly
+    // brighter than the lateral/rear mass, plus the SCM lines themselves
+    // get a modest brightening as an implicit-shading ridge cue.
+    const frontness = clamp01(ez / N.depthRatio);
+    const depthCue = (frontness * 2 - 1) * 0.3 + scm * 0.5;
+
+    writeParticle(
+      buf, i, x, y, z, PART.NECK, false, isHalo ? rFrac : rFrac * 0.6,
+      pf.pointSizeRange, pf.brightnessRange, depthCue
+    );
+  }
+}
+
+// ---------------------------------------------------------------------
+// SHOULDERS / UPPER THORAX — clavicular span, sternum, trapezius slope,
+// deltoid masses, upper pectoral/thorax volume.
+// ---------------------------------------------------------------------
 function shoulderShape(nx, ny, nz) {
   let r = 1.0;
 
@@ -176,19 +331,45 @@ function shoulderShape(nx, ny, nz) {
   const waistTaper = smoothstep(-0.4, -0.95, ny);
   r -= 0.14 * waistTaper;
 
+  // Upper pectoral / thorax volume, front-facing, center-weighted.
   const chestBulge =
     gaussianMask(ny, 0.18, 0.32) * smoothstep(0.08, 0.5, nz) * (1 - smoothstep(0.5, 0.85, Math.abs(nx)));
   r += 0.075 * chestBulge;
 
+  // Suprasternal / sternum region.
   const sternumMask = gaussianMask(nx, 0, 0.1) * smoothstep(0.15, 0.55, nz) * gaussianMask(ny, 0.05, 0.4);
   r += 0.03 * sternumMask;
 
+  // Trapezius slope — a diagonal ridge from the neck base out toward each
+  // shoulder point, rather than a flat collar: real trapezius mass slopes
+  // down and outward, it isn't a horizontal shelf.
+  const trapDeviation = ny - (0.8 - 0.55 * Math.abs(nx));
+  const trapMask =
+    gaussianMask(trapDeviation, 0, 0.07) * smoothstep(0.08, 0.32, Math.abs(nx)) * (1 - smoothstep(0.55, 0.85, Math.abs(nx)));
+  r += 0.05 * trapMask;
+
+  // Clavicle ridge — sharper and slightly wider than before, the clearest
+  // single readable landmark where the neck meets the shoulders.
   const clavicleBand = gaussianMask(ny, 0.8, 0.05) * smoothstep(0.08, 0.5, nz);
   const clavicleSide = smoothstep(0.04, 0.3, Math.abs(nx)) * smoothstep(0.88, 0.42, Math.abs(nx));
   r += 0.08 * clavicleBand * clavicleSide;
 
   return Math.max(0.4, r);
 }
+
+/** Density salience for the shoulder/thorax volume: clavicle line,
+ *  deltoid edge (where the shoulder mass rolls over into the arm) and
+ *  the trapezius slope get more particles than the smooth chest/back
+ *  filler volume. Returned in roughly [1, 2.5]. */
+function shoulderSalience(nx, ny, nz) {
+  const clavicleBand = gaussianMask(ny, 0.8, 0.06) * smoothstep(0.08, 0.5, nz);
+  const deltoidEdge = gaussianMask(Math.abs(nx), 0.58, 0.16);
+  const sternum = gaussianMask(nx, 0, 0.12) * smoothstep(0.15, 0.55, nz);
+  const trapDeviation = ny - (0.8 - 0.55 * Math.abs(nx));
+  const trapEdge = gaussianMask(trapDeviation, 0, 0.09) * smoothstep(0.08, 0.32, Math.abs(nx));
+  return 1 + 0.55 * clavicleBand + 0.4 * deltoidEdge + 0.25 * sternum + 0.35 * trapEdge;
+}
+const SHOULDER_MAX_SALIENCE = 2.6;
 
 function randomDirection() {
   const u = Math.random() * 2 - 1;
@@ -219,10 +400,10 @@ function allocate(count) {
   };
 }
 
-/** featureBoost (-1..1ish, default 0) biases size/brightness so anatomical
- *  ridges (brow/nose/cheek/chin) read brighter and larger, and depressions
- *  (eye sockets) read dimmer/smaller — an implicit shading cue standing in
- *  for the lighting model this unlit additive-blend renderer doesn't have. */
+/** featureBoost (roughly -1..1) biases size/brightness so anatomical
+ *  ridges read brighter and larger, and depressions/rear volume read
+ *  dimmer/smaller — an implicit shading + depth cue standing in for the
+ *  lighting model this unlit additive-blend renderer doesn't have. */
 function writeParticle(buf, i, x, y, z, part, isFace, edgeAmount, sizeRange, brightnessRange, featureBoost) {
   buf.positions[i * 3] = x;
   buf.positions[i * 3 + 1] = y;
@@ -233,31 +414,54 @@ function writeParticle(buf, i, x, y, z, part, isFace, edgeAmount, sizeRange, bri
 
   // rnd is the mean of two draws (not one) — a tighter, bell-ish spread
   // instead of uniform, so few particles roll near the extremes. Combined
-  // with a real (not randomly-gated) featureBoost multiplier, ridges get a
-  // *consistent* moderate brightening across all their particles — a soft
-  // shading gradient — instead of a handful of lottery-bright outliers
-  // that, under sparse sampling, read as a false "connect the dots" line.
+  // with a real (not randomly-gated) featureBoost multiplier, ridges get
+  // a *consistent* moderate brightening across all their particles — a
+  // soft shading gradient — instead of a handful of lottery-bright
+  // outliers that, under sparse sampling, read as a false "connect the
+  // dots" line (found and fixed while tuning this).
   const fb = Math.max(-1, Math.min(1, featureBoost || 0));
   const rnd = (Math.random() + Math.random()) * 0.5;
   buf.random[i] = rnd;
   const edgeDim = 1 - Math.min(1, edgeAmount) * 0.55;
-  buf.size[i] = lerp(sizeRange[0], sizeRange[1], rnd) * edgeDim;
+  buf.size[i] = lerp(sizeRange[0], sizeRange[1], rnd) * edgeDim * (1 + Math.max(0, fb) * 0.12);
   const baseBrightness = lerp(brightnessRange[0], brightnessRange[1], 1 - rnd * 0.55);
-  buf.brightness[i] = Math.min(1.15, baseBrightness * (1 + fb * 0.16)) * edgeDim;
+  buf.brightness[i] = Math.min(1.15, baseBrightness * (1 + fb * 0.18)) * edgeDim;
 
   buf.seed[i * 3] = Math.random();
   buf.seed[i * 3 + 1] = Math.random();
   buf.seed[i * 3 + 2] = Math.random();
 }
 
-function sampleEllipsoidPart(buf, start, count, part, isFace, radii, center, shapeFn, sizeRange, brightnessRange) {
+/**
+ * Samples a body part's volume as a deformed ellipsoid (see headShape/
+ * shoulderShape). When salienceFn is given, the sampling direction
+ * itself is importance-weighted toward that function's high-salience
+ * regions (landmark edges) via rejection sampling, rather than uniform
+ * over solid angle — real anatomical density redistribution, not just a
+ * brightness cosmetic. Every particle also gets a generic front-vs-back
+ * depth cue from nz: frontal/near planes read brighter and slightly
+ * larger than rear filler volume.
+ */
+function sampleEllipsoidPart(buf, start, count, part, isFace, radii, center, shapeFn, sizeRange, brightnessRange, salienceFn, maxSalience) {
   const pf = CONFIG.PARTICLE_FIELD;
   const haloCount = Math.floor(count * pf.haloFraction);
   const coreCount = count - haloCount;
 
   for (let k = 0; k < count; k++) {
     const i = start + k;
-    const [nx, ny, nz] = randomDirection();
+    let nx, ny, nz;
+    if (salienceFn) {
+      let tries = 0;
+      do {
+        [nx, ny, nz] = randomDirection();
+        const weight = salienceFn(nx, ny, nz);
+        tries++;
+        if (tries >= 22 || Math.random() * maxSalience <= weight) break;
+      } while (true);
+    } else {
+      [nx, ny, nz] = randomDirection();
+    }
+
     const shapeMul = shapeFn ? shapeFn(nx, ny, nz) : 1;
     const isHalo = k >= coreCount;
     const rFrac = isHalo ? haloFractionSample(pf.haloDepth) : radialFraction(pf.centerBias);
@@ -266,32 +470,39 @@ function sampleEllipsoidPart(buf, start, count, part, isFace, radii, center, sha
     const y = center[1] + ny * rFrac * shapeMul * radii[1];
     const z = center[2] + nz * rFrac * shapeMul * radii[2];
 
-    writeParticle(buf, i, x, y, z, part, isFace, isHalo ? rFrac : rFrac * 0.6, sizeRange, brightnessRange, 0);
+    const depthCue = smoothstep(-0.3, 0.75, nz) * 2 - 1;
+
+    writeParticle(buf, i, x, y, z, part, isFace, isHalo ? rFrac : rFrac * 0.6, sizeRange, brightnessRange, depthCue * 0.4);
   }
 }
 
 /**
- * Samples the face as a proper displacement-mapped relief (see
- * faceRelief/faceWidthLimit above) instead of a flat oval patch. (u, v)
- * are drawn uniformly inside the tapered silhouette via rejection — cheap,
- * since the taper only trims the corners of the square.
- */
-/**
+ * Samples the face as a displacement-mapped relief (see faceRelief/
+ * faceWidthLimit above), importance-sampled toward high |feature| so
+ * particle DENSITY itself — not just brightness — concentrates at
+ * landmarks (brow, orbital rim, nasal bridge, cheekbones, jaw contour,
+ * chin) rather than being spread uniformly over the face's area.
+ *
  * Sampled in mirrored (u, -u) pairs rather than independently at random:
- * a real face reads as symmetric, and independent left/right random draws
- * — even from the same distribution — reliably produce a visibly lopsided
- * result (confirmed while tuning this: identical settings, two different
- * random seeds, two noticeably different-looking faces). One (u>=0, v)
- * sample and its relief are computed once per pair and placed at both
- * +u and -u; only the per-particle sparkle (size/brightness/seed) is
- * still independently randomized per side, so it stays organic rather
- * than perfectly identical either side.
+ * a real face reads as symmetric, and independent left/right random
+ * draws — even from the same distribution — reliably produce a visibly
+ * lopsided result (confirmed while tuning this: identical settings, two
+ * different random seeds, two noticeably different-looking faces). One
+ * (u>=0, v) sample and its relief are computed once per pair and placed
+ * at both +u and -u; only the per-particle sparkle (size/brightness/
+ * seed) is still independently randomized per side, so it stays organic
+ * rather than perfectly identical either side.
  */
 function sampleFace(buf, start, count, field) {
   const pf = CONFIG.PARTICLE_FIELD;
   const haloCount = Math.floor(count * pf.haloFraction);
   const coreCount = count - haloCount;
   const pairCount = Math.ceil(count / 2);
+  // Squared rather than linear: the orbital/nasal cluster (the strongest
+  // |feature| values by design) gets a strong, clear density lead, while
+  // the smaller supporting landmarks (zygomatic, mandible, mouth, chin)
+  // get a gentle lift rather than competing with them for density.
+  const maxWeight = 2.15;
 
   for (let p = 0; p < pairCount; p++) {
     const k0 = p * 2;
@@ -300,15 +511,24 @@ function sampleFace(buf, start, count, field) {
     let uAbs = 0;
     let v = 0;
     let wLimit = 1;
+    let relief = null;
     let tries = 0;
     do {
       uAbs = Math.random();
       v = Math.random() * 2 - 1;
       wLimit = faceWidthLimit(v);
       tries++;
-    } while (tries < 40 && (uAbs > wLimit || v * v * 1.05 + uAbs * uAbs * 0.4 > 1.08));
+      if (uAbs > wLimit || v * v * 1.05 + uAbs * uAbs * 0.4 > 1.08) {
+        relief = null;
+        continue;
+      }
+      relief = faceRelief(uAbs, v);
+      const weight = 1 + Math.min(1.1, relief.feature * relief.feature * 1.8);
+      if (tries >= 45 || Math.random() * maxWeight <= weight) break;
+    } while (true);
+    if (!relief) relief = faceRelief(uAbs, v);
 
-    const { z: reliefZ, feature } = faceRelief(uAbs, v);
+    const { z: reliefZ, feature } = relief;
     const y = field.center[1] + v * field.height;
     const edgeBase = (uAbs / Math.max(0.001, wLimit)) * 0.5;
 
@@ -332,47 +552,6 @@ function sampleFace(buf, start, count, field) {
 }
 
 /**
- * The neck as an elliptical (wider left-right than front-back) tapered
- * column with a subtle front throat-flatten and a flare at its base into
- * the trapezius/clavicle mass — a real neck reads nothing like a circular
- * tube, which is what a uniform-angle cylinder sample would give.
- */
-function sampleNeck(buf, start, count, height) {
-  const N = CONFIG.FIELD.neck;
-  const pf = CONFIG.PARTICLE_FIELD;
-  const haloCount = Math.floor(count * pf.haloFraction);
-  const coreCount = count - haloCount;
-  const overlapBottom = height * 0.5;
-  const overlapTop = height * 0.68;
-
-  for (let k = 0; k < count; k++) {
-    const i = start + k;
-    const y = lerp(-overlapBottom, height + overlapTop, Math.random());
-    const yClamped = Math.min(height, Math.max(0, y));
-    const tNorm = yClamped / height;
-
-    const flare = smoothstep(0.22, 0, tNorm) * 0.35;
-    const baseR = lerp(N.bottomRadius, N.topRadius, tNorm) + flare * N.bottomRadius;
-
-    const isHalo = k >= coreCount;
-    const rFrac = isHalo ? haloFractionSample(pf.haloDepth) : Math.pow(Math.random(), pf.centerBias / 2);
-    const angle = Math.random() * Math.PI * 2;
-
-    let ex = Math.cos(angle) * N.widthRatio;
-    let ez = Math.sin(angle) * N.depthRatio;
-    if (ez > 0) {
-      ez -= ez * smoothstep(0.3, 0.9, ez / N.depthRatio) * 0.22;
-    }
-
-    const r = baseR * rFrac;
-    const x = ex * r;
-    const z = ez * r;
-
-    writeParticle(buf, i, x, y, z, PART.NECK, false, isHalo ? rFrac : rFrac * 0.6, pf.pointSizeRange, pf.brightnessRange, 0);
-  }
-}
-
-/**
  * Builds the entire humanoid particle field for a given quality preset's
  * counts. Positions are local to each part's own pivot frame (shoulder /
  * neck / head) so the renderer can skin them to that part's rigid world
@@ -387,7 +566,7 @@ function buildHumanoidField(counts) {
   sampleEllipsoidPart(
     buf, offset, counts.head, PART.HEAD, false,
     CONFIG.FIELD.head.radii, CONFIG.FIELD.head.center, headShape,
-    pf.pointSizeRange, pf.brightnessRange
+    pf.pointSizeRange, pf.brightnessRange, headSalience, HEAD_MAX_SALIENCE
   );
   offset += counts.head;
 
@@ -400,7 +579,7 @@ function buildHumanoidField(counts) {
   sampleEllipsoidPart(
     buf, offset, counts.shoulder, PART.SHOULDER, false,
     CONFIG.FIELD.shoulders.radii, CONFIG.FIELD.shoulders.center, shoulderShape,
-    pf.pointSizeRange, pf.brightnessRange
+    pf.pointSizeRange, pf.brightnessRange, shoulderSalience, SHOULDER_MAX_SALIENCE
   );
   offset += counts.shoulder;
 
