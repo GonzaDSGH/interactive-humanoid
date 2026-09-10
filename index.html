@@ -1,0 +1,58 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+<title>Camera Particle Body</title>
+<link rel="stylesheet" href="css/style.css" />
+
+<!-- Fatal-error hook must exist before any library tag so a failed CDN load is reported. -->
+<script>
+  window.__CPB_BOOT__ = { libErrors: [] };
+  window.__cpbLibError = function (name) {
+    window.__CPB_BOOT__.libErrors.push(name);
+  };
+</script>
+
+<!-- p5.js is the runtime: setup/draw/canvas/capture/resize all come from here. -->
+<script src="https://cdn.jsdelivr.net/npm/p5@1.11.10/lib/p5.min.js"
+        onerror="window.__cpbLibError('p5.js')"></script>
+<!-- ml5.js is used ONLY as the machine-learning layer (BodySegmentation). -->
+<script src="https://cdn.jsdelivr.net/npm/ml5@1.4.0/dist/ml5.min.js"
+        onerror="window.__cpbLibError('ml5.js')"></script>
+</head>
+<body>
+  <main id="stage" aria-label="Particle portrait"></main>
+
+  <div id="overlay" class="overlay">
+    <section class="panel" id="panel-activate">
+      <h1>Camera Particle Body</h1>
+      <p>Your webcam becomes the body. The video itself is never shown &mdash; only particles.</p>
+      <button id="start-button" type="button">Enable camera</button>
+      <p class="fine">Browsers require a click before granting camera access.</p>
+    </section>
+
+    <section class="panel" id="panel-status" hidden>
+      <div class="spinner" aria-hidden="true"></div>
+      <p id="status-text">Starting&hellip;</p>
+    </section>
+
+    <section class="panel panel-error" id="panel-error" hidden>
+      <h2 id="error-title">Something went wrong</h2>
+      <p id="error-text"></p>
+      <pre id="error-detail" hidden></pre>
+      <button id="retry-button" type="button">Try again</button>
+    </section>
+  </div>
+
+  <script src="js/config.js"></script>
+  <script src="js/ui.js"></script>
+  <script src="js/camera.js"></script>
+  <script src="js/segmenter.js"></script>
+  <script src="js/field.js"></script>
+  <script src="js/particles.js"></script>
+  <script src="js/renderer.js"></script>
+  <script src="js/debug.js"></script>
+  <script src="js/sketch.js"></script>
+</body>
+</html>
