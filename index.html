@@ -1,0 +1,63 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+  <title>PRESENCIA — real body as particles</title>
+  <link rel="icon" href="data:," />
+  <link rel="stylesheet" href="style.css" />
+
+  <!-- Creative runtime: p5.js owns the canvas, the camera and the render loop -->
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/p5.js/1.11.3/p5.min.js"></script>
+  <!-- Analysis layer only: ml5.js body segmentation / face mesh / body pose -->
+  <script src="https://unpkg.com/ml5@1/dist/ml5.min.js"></script>
+</head>
+
+<body>
+  <!-- Temporary activation interface. Completely removed once the camera streams. -->
+  <div id="ui" class="ui" hidden>
+    <div class="ui-panel">
+      <h1 class="ui-title">PRESENCIA</h1>
+      <p class="ui-sub">Your body, observed by the camera, rendered as particle matter.</p>
+
+      <button id="activate" class="ui-btn" type="button">ACTIVATE CAMERA</button>
+
+      <div id="picker" class="ui-picker" hidden>
+        <label class="ui-label" for="devices">Select a camera</label>
+        <select id="devices" class="ui-select"></select>
+        <button id="use-device" class="ui-btn ui-btn-small" type="button">USE THIS CAMERA</button>
+      </div>
+
+      <p id="status" class="ui-status" role="status"></p>
+
+      <div id="error" class="ui-error" hidden>
+        <strong id="error-title">Camera error</strong>
+        <p id="error-message"></p>
+        <p id="error-hint" class="ui-hint"></p>
+        <pre id="error-devices" class="ui-devices" hidden></pre>
+        <button id="retry" class="ui-btn ui-btn-small" type="button">RETRY</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Debug overlay (?debug=1). Never rendered in normal mode. -->
+  <div id="debug" class="debug" hidden>
+    <pre id="debug-stats" class="debug-stats"></pre>
+    <div id="debug-viz" class="debug-viz"></div>
+    <p class="debug-keys">D stats · V maps · Q quality</p>
+  </div>
+
+  <script src="config.js"></script>
+  <script src="camera.js"></script>
+  <script src="segmentation.js"></script>
+  <script src="faceAnalysis.js"></script>
+  <script src="poseAnalysis.js"></script>
+  <script src="analysis.js"></script>
+  <script src="motion.js"></script>
+  <script src="particles.js"></script>
+  <script src="environment.js"></script>
+  <script src="renderer.js"></script>
+  <script src="debug.js"></script>
+  <script src="sketch.js"></script>
+</body>
+</html>

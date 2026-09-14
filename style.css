@@ -1,0 +1,182 @@
+/* ------------------------------------------------------------------
+   PRESENCIA — only the generated particle artwork is ever visible.
+   Everything here is either the temporary activation interface or the
+   opt-in debug overlay (?debug=1).
+   ------------------------------------------------------------------ */
+
+:root {
+  --ink: #0a1620;
+  --cyan: #7fe6ff;
+  --cyan-dim: #3d8ea8;
+  --panel: rgba(4, 12, 20, 0.82);
+  --danger: #ff9b8a;
+}
+
+* { box-sizing: border-box; }
+
+html, body {
+  margin: 0;
+  padding: 0;
+  width: 100%;
+  height: 100%;
+  overflow: hidden;
+  background: #02060c;
+  color: var(--cyan);
+  font-family: "Helvetica Neue", Helvetica, Arial, sans-serif;
+  -webkit-font-smoothing: antialiased;
+}
+
+/* p5 fullscreen WEBGL canvas (scoped: the debug thumbnails are canvases too) */
+canvas.artwork-canvas {
+  display: block;
+  position: fixed;
+  inset: 0;
+  z-index: 0;
+}
+
+/* The raw webcam element is a data source only and must never be seen. */
+video {
+  display: none !important;
+}
+
+/* ---------------- activation interface ---------------- */
+
+.ui {
+  position: fixed;
+  inset: 0;
+  z-index: 10;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 24px;
+  background: radial-gradient(circle at 50% 45%, rgba(10, 30, 46, 0.55), rgba(1, 4, 9, 0.92));
+  backdrop-filter: blur(2px);
+}
+
+.ui[hidden] { display: none; }
+
+.ui-panel {
+  width: min(420px, 100%);
+  padding: 28px 26px 24px;
+  border: 1px solid rgba(127, 230, 255, 0.18);
+  border-radius: 14px;
+  background: var(--panel);
+  text-align: center;
+}
+
+.ui-title {
+  margin: 0 0 6px;
+  font-size: 22px;
+  font-weight: 400;
+  letter-spacing: 0.42em;
+  text-indent: 0.42em;
+}
+
+.ui-sub {
+  margin: 0 0 22px;
+  font-size: 12.5px;
+  line-height: 1.55;
+  color: var(--cyan-dim);
+}
+
+.ui-btn {
+  display: inline-block;
+  width: 100%;
+  padding: 13px 18px;
+  border: 1px solid rgba(127, 230, 255, 0.45);
+  border-radius: 8px;
+  background: rgba(127, 230, 255, 0.07);
+  color: var(--cyan);
+  font-size: 12px;
+  letter-spacing: 0.22em;
+  cursor: pointer;
+  transition: background 160ms ease, border-color 160ms ease;
+}
+
+.ui-btn:hover { background: rgba(127, 230, 255, 0.16); border-color: rgba(127, 230, 255, 0.8); }
+.ui-btn:disabled { opacity: 0.45; cursor: default; }
+.ui-btn-small { margin-top: 10px; padding: 9px 14px; font-size: 11px; }
+
+.ui-picker { margin-top: 18px; text-align: left; }
+.ui-label { display: block; margin-bottom: 7px; font-size: 10.5px; letter-spacing: 0.2em; color: var(--cyan-dim); }
+
+.ui-select {
+  width: 100%;
+  padding: 10px;
+  border: 1px solid rgba(127, 230, 255, 0.3);
+  border-radius: 7px;
+  background: rgba(2, 10, 18, 0.9);
+  color: var(--cyan);
+  font-size: 12px;
+}
+
+.ui-status {
+  min-height: 16px;
+  margin: 16px 0 0;
+  font-size: 11px;
+  letter-spacing: 0.12em;
+  color: var(--cyan-dim);
+}
+
+.ui-error {
+  margin-top: 18px;
+  padding: 14px;
+  border: 1px solid rgba(255, 155, 138, 0.35);
+  border-radius: 8px;
+  background: rgba(40, 10, 8, 0.4);
+  color: var(--danger);
+  text-align: left;
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.ui-error[hidden] { display: none; }
+.ui-error strong { display: block; margin-bottom: 6px; letter-spacing: 0.14em; font-weight: 400; }
+.ui-error p { margin: 0 0 8px; }
+.ui-hint { color: rgba(255, 200, 190, 0.72); font-size: 11px; }
+
+.ui-devices {
+  max-height: 140px;
+  margin: 0 0 8px;
+  overflow: auto;
+  font-size: 10.5px;
+  line-height: 1.45;
+  white-space: pre-wrap;
+  color: rgba(255, 210, 200, 0.75);
+}
+
+/* ---------------- debug overlay (?debug=1 only) ---------------- */
+
+.debug {
+  position: fixed;
+  top: 12px;
+  left: 12px;
+  z-index: 20;
+  max-width: 300px;
+  padding: 10px 12px;
+  border: 1px solid rgba(127, 230, 255, 0.22);
+  border-radius: 8px;
+  background: rgba(2, 8, 14, 0.72);
+  color: var(--cyan);
+  font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+  pointer-events: none;
+}
+
+.debug[hidden] { display: none; }
+
+.debug-stats { margin: 0; font-size: 10.5px; line-height: 1.5; white-space: pre; }
+
+.debug-viz {
+  display: grid;
+  grid-template-columns: repeat(2, 1fr);
+  gap: 6px;
+  margin-top: 9px;
+}
+
+.debug-viz[hidden] { display: none; }
+
+.debug-viz figure { margin: 0; }
+.debug-viz canvas { width: 100%; height: auto; display: block; border: 1px solid rgba(127, 230, 255, 0.16); image-rendering: pixelated; }
+.debug-viz figcaption { margin-top: 2px; font-size: 9px; letter-spacing: 0.08em; color: var(--cyan-dim); }
+
+.debug-keys { margin: 8px 0 0; font-size: 9px; letter-spacing: 0.1em; color: var(--cyan-dim); }
