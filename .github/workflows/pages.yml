@@ -1,6 +1,10 @@
-# Publishes the site on GitHub Pages from the PROGRAMACION-14/9 branch.
-# The artwork is plain static files, so the branch content is uploaded as-is.
-name: Deploy to GitHub Pages
+# Publishes the site on GitHub Pages.
+#
+# Pages serves the gh-pages branch, so this mirrors the working branch onto it
+# and then smoke-tests the published URL. The artwork is plain static files, so
+# the branch content is served as-is over HTTPS, which is what getUserMedia
+# needs for camera access.
+name: Publish to GitHub Pages
 
 on:
   push:
@@ -8,36 +12,54 @@ on:
   workflow_dispatch:
 
 permissions:
-  contents: read
-  pages: write
-  id-token: write
+  contents: write
 
-# Let a running deployment finish rather than cancelling it mid-publish.
 concurrency:
-  group: pages
+  group: pages-publish
   cancel-in-progress: false
 
 jobs:
-  deploy:
+  publish:
     runs-on: ubuntu-latest
-    environment:
-      name: github-pages
-      url: ${{ steps.deployment.outputs.page_url }}
+    env:
+      BASE: https://gonzadsgh.github.io/interactive-humanoid
     steps:
       - name: Checkout
         uses: actions/checkout@v4
 
-      # enablement turns Pages on for the repository if it is not on yet
-      - name: Configure Pages
-        uses: actions/configure-pages@v5
-        with:
-          enablement: true
+      - name: Mirror this branch to gh-pages
+        run: git push --force origin HEAD:refs/heads/gh-pages
 
-      - name: Upload site
-        uses: actions/upload-pages-artifact@v3
-        with:
-          path: .
+      - name: Wait for the published commit
+        run: |
+          want="$(git rev-parse HEAD)"
+          for i in $(seq 1 40); do
+            got="$(curl -fsS "$BASE/commit.txt" 2>/dev/null || true)"
+            if [ "$got" = "$want" ]; then echo "published $want"; exit 0; fi
+            sleep 10
+          done
+          echo "::warning::commit marker not seen; checking assets anyway"
 
-      - name: Deploy
-        id: deployment
-        uses: actions/deploy-pages@v4
+      - name: Check every published asset
+        run: |
+          fail=0
+          for f in "" index.html style.css config.js camera.js segmentation.js \
+                   faceAnalysis.js poseAnalysis.js analysis.js motion.js \
+                   particles.js environment.js renderer.js debug.js sketch.js \
+                   shaders/common.glsl shaders/field.vert shaders/env.vert \
+                   shaders/free.vert shaders/sprite.frag \
+                   shaders/atmosphere.vert shaders/atmosphere.frag; do
+            code=$(curl -s -o /dev/null -w '%{http_code}' "$BASE/$f")
+            printf '%-32s %s\n' "${f:-/}" "$code"
+            [ "$code" = "200" ] || fail=1
+          done
+          echo "--- external dependencies ---"
+          for u in https://cdnjs.cloudflare.com/ajax/libs/p5.js/1.11.3/p5.min.js \
+                   https://unpkg.com/ml5@1/dist/ml5.min.js; do
+            code=$(curl -s -L -o /dev/null -w '%{http_code}' "$u")
+            printf '%-70s %s\n' "$u" "$code"
+            [ "$code" = "200" ] || fail=1
+          done
+          echo "--- https / headers ---"
+          curl -sS -o /dev/null -D- "$BASE/" | grep -iE '^(HTTP|content-type|strict-transport)' || true
+          exit $fail
