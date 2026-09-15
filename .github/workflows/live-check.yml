@@ -4,6 +4,9 @@ name: Live site check
 
 on:
   workflow_dispatch:
+  push:
+    branches: ["PROGRAMACION-14/9"]
+    paths: [".github/workflows/live-check.yml"]
 
 jobs:
   check:
