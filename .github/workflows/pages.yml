@@ -27,15 +27,25 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
+      # gh-pages carries one extra file, a marker naming the source commit, so
+      # the checks below can tell the new build apart from the previous one.
       - name: Mirror this branch to gh-pages
-        run: git push --force origin HEAD:refs/heads/gh-pages
+        run: |
+          sha="$(git rev-parse HEAD)"
+          echo "sha=$sha" >> "$GITHUB_ENV"
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git checkout -B gh-pages
+          echo "$sha" > commit.txt
+          git add commit.txt
+          git commit -m "publish $sha"
+          git push --force origin gh-pages
 
       - name: Wait for the published commit
         run: |
-          want="$(git rev-parse HEAD)"
           for i in $(seq 1 40); do
             got="$(curl -fsS "$BASE/commit.txt" 2>/dev/null || true)"
-            if [ "$got" = "$want" ]; then echo "published $want"; exit 0; fi
+            if [ "$got" = "$sha" ]; then echo "published $sha"; exit 0; fi
             sleep 10
           done
           echo "::warning::commit marker not seen; checking assets anyway"
