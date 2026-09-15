@@ -119,7 +119,7 @@ All options are URL parameters.
 
 | Parameter | Default | Meaning |
 |---|---|---|
-| `?debug=1` | off | Debug overlay: FPS, camera name and resolution, processing resolution, segmentation status and timing, particle counts, quality level, analysis and render times, plus live mask / luminance / edge / importance maps |
+| `?debug=1` | off | Debug overlay: render FPS, analysis rate and tween position, camera name and resolution, processing resolution, segmentation status and timing, particle counts, quality level, per-tick analysis time, per-frame JS time, plus live mask / luminance / edge / importance maps |
 | `?quality=LOW\|MEDIUM\|HIGH\|ULTRA` | adaptive | Pin a quality level and disable the adaptive controller |
 | `?face=0` | on | Disable the FaceMesh salience pass |
 | `?pose=1` | off | Enable the BodyPose limb salience pass |
@@ -142,6 +142,30 @@ the quality level.
 The grid is reshaped to the camera's aspect ratio, so body proportions are never
 stretched. The renderer starts at MEDIUM and climbs or drops on its own based on
 measured frame rate.
+
+## Two clocks
+
+Detection and image analysis are far more expensive than drawing, and they have
+nothing to gain from running at display rate: a webcam typically delivers 30
+frames a second, so at 60fps half of that work would re-analyse an image the
+system had already seen.
+
+So the project runs two clocks:
+
+* **the analysis clock** — driven by `requestVideoFrameCallback`, it ticks only
+  when the camera actually produces a frame, capped at
+  `CONFIG.analysis.maxRateHz` (30). This is where the capture, the person mask,
+  the luminance/contrast/edge/motion fields and the importance field are built.
+  A watchdog forces a tick if the camera goes quiet, so the image can never
+  freeze.
+* **the render clock** — the normal p5 `draw()` loop, at display rate. Particle
+  drift, trails, the environment and the composition all run here.
+
+The two are bridged on the GPU: the last two analysis states stay resident as
+textures and the vertex shaders read a tween between them, so a body detected at
+30Hz still moves at 60fps instead of stepping. `?debug=1` shows both rates and
+the current tween position. Where a GPU exposes fewer than six vertex texture
+units the tween is skipped automatically and everything else still runs.
 
 ## Project structure
 

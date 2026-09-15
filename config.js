@@ -87,6 +87,15 @@ const CONFIG = {
     auraGain: 1.8,
     faceRadius: 2.2,
 
+    /* Analysis never runs faster than this, however fast the display is.
+       A 30fps camera is unaffected; a 60fps one halves the CPU cost, and the
+       renderer tweens between states so motion stays smooth either way. */
+    maxRateHz: 30,
+    /* finish the tween slightly before the next tick, to trim latency */
+    tweenLead: 0.85,
+    /* force an analysis pass if the camera has been silent this long (ms) */
+    stallMs: 400,
+
     /* fraction of cells that must belong to a person for presence to latch */
     presenceEnter: 0.010,
     presenceExit: 0.0045,

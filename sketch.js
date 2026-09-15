@@ -31,6 +31,15 @@ const APP = {
   fps: 60,
   analysisMs: 0,
   renderMs: 0,
+  frameMs: 0,
+  tickDt: 0,
+  /* the analysis clock, deliberately independent of the render clock */
+  tick: { lastMs: 0, interval: 1 / 30, count: 0, hz: 0, _hzFrom: 0, _hzCount: 0 },
+  newVideoFrame: false,
+  spawnDue: false,
+  _rvfc: false,
+  _rvfcToken: 0,
+  _lastVideoTime: -1,
   freeCount: 0,
   activeEstimate: 0,
   _activeTick: 0,
@@ -145,7 +154,8 @@ function buildQuality(index, aspect) {
   if (MockSource.active || QUERY.mock) MockSource.resize(APP.aw, APP.ah);
 
   Renderer.resizeFields(APP.aw, APP.ah);
-  Renderer.uploadFields(Analysis.texA, Analysis.texB, Analysis.texC);
+  Renderer.primeFields(Analysis.texA, Analysis.texB, Analysis.texC);
+  APP.tick.count = 0;
 
   Particles.build(gl, {
     aw: APP.aw, ah: APP.ah,
@@ -182,13 +192,19 @@ function draw() {
   if (!Renderer.ok) return;
 
   const t0 = performance.now();
+  APP._tickedThisFrame = false;
   updateSources(dt);
   const t1 = performance.now();
   renderFrame(dt);
   const t2 = performance.now();
 
-  APP.analysisMs = APP.analysisMs * 0.9 + (t1 - t0) * 0.1;
+  /* analysisMs is per analysis tick, not per frame, now that the two clocks
+     are separate; frameMs is the total main-thread cost of a rendered frame */
+  if (APP._tickedThisFrame) {
+    APP.analysisMs = APP.analysisMs * 0.85 + (t1 - t0) * 0.15;
+  }
   APP.renderMs = APP.renderMs * 0.9 + (t2 - t1) * 0.1;
+  APP.frameMs = (APP.frameMs || 0) * 0.9 + (t2 - t0) * 0.1;
   APP.fps = APP.fps * 0.92 + (1 / dt) * 0.08;
 
   adaptQuality(now);
@@ -203,41 +219,103 @@ function draw() {
 
 /* ---------------- analysis ---------------- */
 
-function updateSources(dt) {
-  let personRaw = null;
+/* Ask the browser to tell us when the camera actually produces a frame, so
+   the analysis never re-processes an image it has already seen. */
+function armFrameCallback() {
+  const el = CameraManager.capture && CameraManager.capture.elt;
+  if (!el || typeof el.requestVideoFrameCallback !== 'function') {
+    APP._rvfc = false;
+    return false;
+  }
+  APP._rvfc = true;
+  const token = ++APP._rvfcToken;   // makes re-arming safe: old chains retire
+  const step = () => {
+    if (token !== APP._rvfcToken) return;
+    APP.newVideoFrame = true;
+    if (CameraManager.capture && CameraManager.capture.elt === el && CameraManager.ready) {
+      el.requestVideoFrameCallback(step);
+    }
+  };
+  el.requestVideoFrameCallback(step);
+  return true;
+}
 
+/* A new analysis pass is worth doing only when there is new image to look at,
+   and never more often than CONFIG.analysis.maxRateHz. */
+function analysisDue(now) {
+  if (now - APP.tick.lastMs < 1000 / CONFIG.analysis.maxRateHz) return false;
+  if (MockSource.active) return true;
+  if (APP.newVideoFrame) return true;
+  /* Watchdog: never let the artwork freeze because the frame callback chain
+     was dropped (tab hidden, camera hiccup, driver stall). */
+  if (now - APP.tick.lastMs > CONFIG.analysis.stallMs) {
+    if (APP._rvfc) armFrameCallback();
+    return true;
+  }
+  if (!APP._rvfc) {
+    /* fallback for browsers without requestVideoFrameCallback */
+    const el = CameraManager.capture && CameraManager.capture.elt;
+    if (el && el.currentTime !== APP._lastVideoTime) {
+      APP._lastVideoTime = el.currentTime;
+      return true;
+    }
+  }
+  return false;
+}
+
+/* Everything expensive lives here, and it runs at the camera's rate. */
+function runAnalysis(now) {
+  const t = APP.tick;
+  const dt = t.lastMs ? Math.min(0.5, (now - t.lastMs) / 1000) : 1 / 30;
+  t.lastMs = now;
+  t.interval = t.interval * 0.82 + dt * 0.18;
+  t.count++;
+  t._hzCount++;
+  if (now - t._hzFrom > 500) {
+    t.hz = (t._hzCount * 1000) / (now - t._hzFrom);
+    t._hzFrom = now;
+    t._hzCount = 0;
+  }
+  APP.newVideoFrame = false;
+
+  let personRaw = null;
   if (MockSource.active) {
-    const px = MockSource.update(APP.time);
-    Analysis.readLuminance(px);
+    Analysis.readLuminance(MockSource.update(APP.time));
     personRaw = MockSource.field;
-    APP.hasSource = true;
-  } else if (CameraManager.ready && CameraManager.capture) {
+  } else {
     /* the single, controlled mirroring stage of the whole pipeline */
     const g = APP.analysisGfx;
     if (g.capture(CameraManager.capture, QUERY.mirror, false)) {
       Analysis.readLuminance(g.pixels);
     }
-
     Segmentation.sample(QUERY.mirror);
     personRaw = Segmentation.field;
-
     FaceAnalysis.update(QUERY.mirror, CameraManager.width, CameraManager.height, dt);
     PoseAnalysis.update(QUERY.mirror, CameraManager.width, CameraManager.height, dt);
-    APP.hasSource = true;
-  } else {
-    APP.hasSource = false;
   }
 
+  Analysis.update(dt, personRaw, FaceAnalysis.field, PoseAnalysis.field);
+  if (t.count <= 1) Renderer.primeFields(Analysis.texA, Analysis.texB, Analysis.texC);
+  else Renderer.pushFields(Analysis.texA, Analysis.texB, Analysis.texC);
+  APP.spawnDue = true;
+  APP.tickDt = dt;
+  APP._tickedThisFrame = true;
+}
+
+function updateSources(dt) {
+  APP.hasSource = MockSource.active || !!(CameraManager.ready && CameraManager.capture);
   if (!APP.hasSource) {
     Analysis.presence = Math.max(0, Analysis.presence - dt * 1.5);
     return;
   }
 
-  Analysis.update(dt, personRaw, FaceAnalysis.field, PoseAnalysis.field);
-  Analysis.pack();
-  Renderer.uploadFields(Analysis.texA, Analysis.texB, Analysis.texC);
+  const now = millis();
+  if (analysisDue(now)) runAnalysis(now);
 
-  APP.freeCount = MotionParticles.update(dt, APP.rect, APP.time);
+  /* Render-rate work: the trails integrate every frame so they stay smooth,
+     but they are only seeded when the motion field is actually new. */
+  APP.freeCount = MotionParticles.update(dt, APP.rect, APP.time, APP.spawnDue, APP.tickDt || dt);
+  APP.spawnDue = false;
   Particles.uploadFree(drawingContext, APP.freeCount);
 }
 
@@ -245,6 +323,15 @@ function updateSources(dt) {
 
 function renderFrame(dt) {
   Environment.update(APP.time);
+
+  /* Where the render clock currently sits between the last two analysis
+     states. This is what turns a 30fps detection into 60fps motion. */
+  if (Renderer.interpolate) {
+    const span = constrain(APP.tick.interval, 1 / 60, 1 / 6) * 1000 * CONFIG.analysis.tweenLead;
+    Renderer.blend = constrain((millis() - APP.tick.lastMs) / span, 0, 1);
+  } else {
+    Renderer.blend = 1;
+  }
 
   const dpr = constrain(height / 900, 0.7, 2.0);
   const state = {
@@ -421,6 +508,9 @@ async function startCamera(deviceId) {
   }
 
   video = CameraManager.capture;
+  armFrameCallback();
+  APP.tick.lastMs = 0;
+  APP._lastVideoTime = -1;
   APP.sourceW = CameraManager.width;
   APP.sourceH = CameraManager.height;
   buildQuality(APP.qualityIndex, CameraManager.width / CameraManager.height);
@@ -488,6 +578,10 @@ function fail(title, message, hint) {
 function collectStats() {
   return {
     fps: APP.fps,
+    analysisHz: APP.tick.hz,
+    blend: Renderer.blend,
+    interpolate: Renderer.interpolate,
+    frameMs: APP.frameMs,
     quality: APP.quality ? APP.quality.name : '-',
     cameraLabel: MockSource.active ? 'MOCK SOURCE (dev)' : (CameraManager.label || '-'),
     cameraW: MockSource.active ? MockSource.width : CameraManager.width,

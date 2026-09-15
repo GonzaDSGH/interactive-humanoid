@@ -49,7 +49,8 @@ const Debug = {
   update(stats) {
     if (!this.enabled || !this.showStats) return;
     const l = [];
-    l.push(`fps            ${stats.fps.toFixed(1)}`);
+    l.push(`render fps     ${stats.fps.toFixed(1)}`);
+    l.push(`analysis hz    ${stats.analysisHz.toFixed(1)}  tween ${stats.blend.toFixed(2)}${stats.interpolate ? '' : ' (off)'}`);
     l.push(`quality        ${stats.quality}`);
     l.push(`camera         ${stats.cameraLabel}`);
     l.push(`camera res     ${stats.cameraW}x${stats.cameraH} @${stats.cameraFps || '?'}`);
@@ -64,7 +65,8 @@ const Debug = {
     l.push(`human parts    ${stats.humanTotal.toLocaleString()} (~${stats.humanActive.toLocaleString()} on)`);
     l.push(`env parts      ${stats.envTotal.toLocaleString()}`);
     l.push(`motion parts   ${stats.freeCount.toLocaleString()}`);
-    l.push(`analysis time  ${stats.analysisMs.toFixed(2)} ms`);
+    l.push(`analysis time  ${stats.analysisMs.toFixed(2)} ms/tick`);
+    l.push(`frame js time  ${stats.frameMs.toFixed(2)} ms`);
     l.push(`render time    ${stats.renderMs.toFixed(2)} ms`);
     this.statsEl.textContent = l.join('\n');
   },

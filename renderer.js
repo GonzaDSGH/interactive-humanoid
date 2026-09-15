@@ -13,7 +13,12 @@ const Renderer = {
   gl: null,
   p5renderer: null,
   programs: {},
-  textures: { A: null, B: null, C: null },
+  /* two complete field states; the vertex shaders interpolate between them so
+     analysis can run below the render rate without the motion stepping */
+  sets: [{ A: null, B: null, C: null }, { A: null, B: null, C: null }],
+  current: 0,
+  interpolate: true,
+  blend: 1,
   texW: 0,
   texH: 0,
   quad: null,
@@ -34,8 +39,12 @@ const Renderer = {
       this.error = 'This GPU/driver exposes no vertex texture units, which the particle pipeline requires.';
       return false;
     }
+    /* interpolation samples both field states, so it needs six vertex texture
+       units; below that the pipeline still runs, just without the tween */
+    this.interpolate = vtf >= 6;
 
-    const common = sources.common + '\n';
+    const header = this.interpolate ? '#define INTERPOLATE 1\n' : '';
+    const common = header + sources.common + '\n';
     try {
       this.programs.field = this._program(common + sources.fieldVert, sources.spriteFrag, 'field');
       this.programs.env = this._program(common + sources.envVert, sources.spriteFrag, 'env');
@@ -113,46 +122,67 @@ const Renderer = {
 
   resizeFields(w, h) {
     const gl = this.gl;
-    for (const k of ['A', 'B', 'C']) {
-      if (this.textures[k]) gl.deleteTexture(this.textures[k]);
-      this.textures[k] = this._makeTexture(w, h);
+    for (const set of this.sets) {
+      for (const k of ['A', 'B', 'C']) {
+        if (set[k]) gl.deleteTexture(set[k]);
+        set[k] = this._makeTexture(w, h);
+      }
     }
     gl.bindTexture(gl.TEXTURE_2D, null);
     this.texW = w;
     this.texH = h;
+    this.current = 0;
+    this.blend = 1;
   },
 
-  uploadFields(a, b, c) {
+  _upload(set, a, b, c) {
     const gl = this.gl;
     const w = this.texW, h = this.texH;
-    if (!w) return;
     gl.pixelStorei(gl.UNPACK_ALIGNMENT, 1);
-    gl.bindTexture(gl.TEXTURE_2D, this.textures.A);
+    gl.bindTexture(gl.TEXTURE_2D, set.A);
     gl.texSubImage2D(gl.TEXTURE_2D, 0, 0, 0, w, h, gl.RGBA, gl.UNSIGNED_BYTE, a);
-    gl.bindTexture(gl.TEXTURE_2D, this.textures.B);
+    gl.bindTexture(gl.TEXTURE_2D, set.B);
     gl.texSubImage2D(gl.TEXTURE_2D, 0, 0, 0, w, h, gl.RGBA, gl.UNSIGNED_BYTE, b);
-    gl.bindTexture(gl.TEXTURE_2D, this.textures.C);
+    gl.bindTexture(gl.TEXTURE_2D, set.C);
     gl.texSubImage2D(gl.TEXTURE_2D, 0, 0, 0, w, h, gl.RGBA, gl.UNSIGNED_BYTE, c);
     gl.bindTexture(gl.TEXTURE_2D, null);
   },
 
+  /* Write both states at once: used on the first tick and after a rebuild, so
+     the tween never starts from an empty field. */
+  primeFields(a, b, c) {
+    if (!this.texW) return;
+    this._upload(this.sets[0], a, b, c);
+    this._upload(this.sets[1], a, b, c);
+    this.blend = 1;
+  },
+
+  /* One new analysis state. The previous one stays resident as the tween
+     origin, so this costs exactly one upload per analysis tick. */
+  pushFields(a, b, c) {
+    if (!this.texW) return;
+    this.current ^= 1;
+    this._upload(this.sets[this.current], a, b, c);
+    this.blend = 0;
+  },
+
   _bindFields(p) {
     const gl = this.gl;
-    if (p.u.u_fieldA && this.textures.A) {
-      gl.activeTexture(gl.TEXTURE0);
-      gl.bindTexture(gl.TEXTURE_2D, this.textures.A);
-      gl.uniform1i(p.u.u_fieldA, 0);
-    }
-    if (p.u.u_fieldB && this.textures.B) {
-      gl.activeTexture(gl.TEXTURE1);
-      gl.bindTexture(gl.TEXTURE_2D, this.textures.B);
-      gl.uniform1i(p.u.u_fieldB, 1);
-    }
-    if (p.u.u_fieldC && this.textures.C) {
-      gl.activeTexture(gl.TEXTURE2);
-      gl.bindTexture(gl.TEXTURE_2D, this.textures.C);
-      gl.uniform1i(p.u.u_fieldC, 2);
-    }
+    const next = this.sets[this.current];
+    const prev = this.sets[this.current ^ 1];
+    const bind = (loc, tex, unit) => {
+      if (!loc || !tex) return;
+      gl.activeTexture(gl.TEXTURE0 + unit);
+      gl.bindTexture(gl.TEXTURE_2D, tex);
+      gl.uniform1i(loc, unit);
+    };
+    bind(p.u.u_fieldA, next.A, 0);
+    bind(p.u.u_fieldB, next.B, 1);
+    bind(p.u.u_fieldC, next.C, 2);
+    bind(p.u.u_prevA, prev.A, 3);
+    bind(p.u.u_prevB, prev.B, 4);
+    bind(p.u.u_prevC, prev.C, 5);
+    if (p.u.u_blend) gl.uniform1f(p.u.u_blend, this.interpolate ? this.blend : 1.0);
   },
 
   /* ---------------- frame ---------------- */

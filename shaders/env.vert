@@ -7,6 +7,10 @@
 attribute vec4 a_seed;  // xy base position (0..1) · z depth · w phase
 
 uniform sampler2D u_fieldA;
+#ifdef INTERPOLATE
+uniform sampler2D u_prevA;
+uniform float u_blend;
+#endif
 uniform vec2  u_res;
 uniform vec4  u_rect;
 uniform float u_time;
@@ -37,7 +41,11 @@ void main() {
   float near = 0.0;
   vec2 uv = (scr - u_rect.xy) / u_rect.zw;
   if (uv.x > 0.0 && uv.x < 1.0 && uv.y > 0.0 && uv.y < 1.0) {
+#ifdef INTERPOLATE
+    vec4 A = mix(texture2D(u_prevA, uv), texture2D(u_fieldA, uv), u_blend);
+#else
     vec4 A = texture2D(u_fieldA, uv);
+#endif
     near = max(A.g, A.r);
   }
 

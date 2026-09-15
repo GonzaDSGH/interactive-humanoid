@@ -91,10 +91,15 @@ const Analysis = {
     this._latched = false;
   },
 
-  /* ---- stage 1: real camera luminance (already mirrored upstream) ---- */
+  /* ---- stage 1: real camera luminance (already mirrored upstream) ----
+     The two luminance buffers ping-pong, so the previous frame is kept by
+     swapping references instead of copying the whole array every tick. */
   readLuminance(px) {
-    const lum = this.lum, prev = this.lumPrev, n = this.n;
-    prev.set(lum);
+    const n = this.n;
+    const prev = this.lum;
+    const lum = this.lumPrev;
+    this.lum = lum;
+    this.lumPrev = prev;
     for (let i = 0, p = 0; i < n; i++, p += 4) {
       lum[i] = (px[p] * 0.2126 + px[p + 1] * 0.7152 + px[p + 2] * 0.0722) * (1 / 255);
     }
@@ -120,6 +125,7 @@ const Analysis = {
     /* motion energy with decay, plus a Lucas-Kanade style flow estimate */
     const motion = this.motion, flowX = this.flowX, flowY = this.flowY;
     const decay = Math.pow(A.motionDecay, Math.max(0.25, dt * 60));
+    const flowK = 1 - Math.pow(0.65, Math.max(0.25, dt * 60));
     let motionSum = 0;
     for (let y = 0; y < ah; y++) {
       const row = y * aw;
@@ -136,6 +142,13 @@ const Analysis = {
         motion[i] = m > d ? m : d;
         motionSum += motion[i];
 
+        /* Flow only matters where something actually moved. Most cells are
+           static background, so skipping the divide there is free. */
+        if (motion[i] < 0.02) {
+          flowX[i] *= 0.92;
+          flowY[i] *= 0.92;
+          continue;
+        }
         const fx = (lum[xr] - lum[xl]) * 0.5;
         const fy = (lum[dn + x] - lum[up + x]) * 0.5;
         const denom = fx * fx + fy * fy + 0.0015;
@@ -143,8 +156,8 @@ const Analysis = {
         let vy = -ft * fy / denom;
         vx = vx < -1 ? -1 : vx > 1 ? 1 : vx;
         vy = vy < -1 ? -1 : vy > 1 ? 1 : vy;
-        flowX[i] += (vx - flowX[i]) * 0.35;
-        flowY[i] += (vy - flowY[i]) * 0.35;
+        flowX[i] += (vx - flowX[i]) * flowK;
+        flowY[i] += (vy - flowY[i]) * flowK;
       }
     }
     this.motionEnergy = motionSum / n;
@@ -192,49 +205,46 @@ const Analysis = {
       aura[i] = a < 0 ? 0 : a > 1 ? 1 : a;
     }
 
-    /* the importance field */
+    /* the importance field, packed straight into the GPU textures.
+       Packing rides along with this pass instead of walking every buffer a
+       second time; the arrays are still warm in cache here. */
     const imp = this.importance;
     const edge = this.edge;
     const face = faceField;
     const pose = poseField;
-    for (let i = 0; i < n; i++) {
+    const personEdge = this.personEdge;
+    const fx = this.flowX, fy = this.flowY;
+    const texA = this.texA, texB = this.texB, texC = this.texC;
+    for (let i = 0, t = 0; i < n; i++, t += 4) {
       const p = person[i];
-      if (p <= 0.004) { imp[i] = 0; continue; }
-      let v = A.base
-        + A.lumWeight * lum[i]
-        + A.contrastWeight * contrast[i]
-        + A.edgeWeight * edge[i]
-        + A.motionWeight * motion[i];
-      if (face) v += A.faceWeight * face[i];
-      if (pose) v += A.poseWeight * pose[i];
-      v *= p;
-      imp[i] = v > 1 ? 1 : v;
-    }
-  },
+      let v = 0;
+      if (p > 0.004) {
+        v = A.base
+          + A.lumWeight * lum[i]
+          + A.contrastWeight * contrast[i]
+          + A.edgeWeight * edge[i]
+          + A.motionWeight * motion[i];
+        if (face) v += A.faceWeight * face[i];
+        if (pose) v += A.poseWeight * pose[i];
+        v *= p;
+        if (v > 1) v = 1;
+      }
+      imp[i] = v;
 
-  /* ---- stage 3: pack into GPU textures ---- */
-  pack() {
-    const n = this.n;
-    const A = this.texA, B = this.texB, C = this.texC;
-    const imp = this.importance, person = this.person, motion = this.motion, lum = this.lum;
-    const edge = this.edge, contrast = this.contrast, personEdge = this.personEdge;
-    const aura = this.aura, held = this.held, fx = this.flowX, fy = this.flowY;
-    const face = FaceAnalysis.field;
-    for (let i = 0, p = 0; i < n; i++, p += 4) {
-      A[p] = imp[i] * 255;
-      A[p + 1] = person[i] * 255;
-      A[p + 2] = motion[i] * 255;
-      A[p + 3] = lum[i] * 255;
+      texA[t] = v * 255;
+      texA[t + 1] = p * 255;
+      texA[t + 2] = motion[i] * 255;
+      texA[t + 3] = lum[i] * 255;
 
-      B[p] = edge[i] * 255;
-      B[p + 1] = contrast[i] * 255;
-      B[p + 2] = face ? face[i] * 255 : 0;
-      B[p + 3] = personEdge[i] * 255;
+      texB[t] = edge[i] * 255;
+      texB[t + 1] = contrast[i] * 255;
+      texB[t + 2] = face ? face[i] * 255 : 0;
+      texB[t + 3] = personEdge[i] * 255;
 
-      C[p] = aura[i] * 255;
-      C[p + 1] = held[i] * 255;
-      C[p + 2] = (fx[i] * 0.5 + 0.5) * 255;
-      C[p + 3] = (fy[i] * 0.5 + 0.5) * 255;
+      texC[t] = aura[i] * 255;
+      texC[t + 1] = held[i] * 255;
+      texC[t + 2] = (fx[i] * 0.5 + 0.5) * 255;
+      texC[t + 3] = (fy[i] * 0.5 + 0.5) * 255;
     }
   },
 

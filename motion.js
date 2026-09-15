@@ -42,26 +42,32 @@ const MotionParticles = {
     this.seed[i] = random(1);
   },
 
-  update(dt, rect, time) {
+  /* `spawn` is true only on an analysis tick: the motion field has not
+     changed between ticks, so re-scanning it every frame found nothing new.
+     Integration still happens every frame, which is what keeps trails smooth.
+     `tickDt` scales the emission budget so the rate per second is unchanged. */
+  update(dt, rect, time, spawn, tickDt) {
     if (!this.capacity) return 0;
     const M = CONFIG.motion;
 
     /* --- emit from moving body cells --- */
     const aw = Analysis.aw, ah = Analysis.ah;
-    if (aw && Analysis.presence > 0.15) {
+    if (spawn && aw && Analysis.presence > 0.15) {
+      const rate = Math.min(3, Math.max(1, (tickDt || dt) * 60));
       const motion = Analysis.motion, person = Analysis.person;
       const fx = Analysis.flowX, fy = Analysis.flowY;
       const stride = M.scanStride;
+      const budget = M.spawnPerFrame * rate;
       let spawned = 0;
       this._scanOffset = (this._scanOffset + 1) % stride;
       const cellW = rect.w / aw, cellH = rect.h / ah;
-      for (let y = this._scanOffset; y < ah && spawned < M.spawnPerFrame; y += stride) {
+      for (let y = this._scanOffset; y < ah && spawned < budget; y += stride) {
         const row = y * aw;
-        for (let x = this._scanOffset; x < aw && spawned < M.spawnPerFrame; x += stride) {
+        for (let x = this._scanOffset; x < aw && spawned < budget; x += stride) {
           const i = row + x;
           const e = motion[i] * person[i];
           if (e < M.spawnThreshold) continue;
-          if (Math.random() > e * 0.55) continue;
+          if (Math.random() > e * 0.55 * rate) continue;
           const sx = rect.x + (x + 0.5) * cellW;
           const sy = rect.y + (y + 0.5) * cellH;
           this._spawn(sx, sy, fx[i], fy[i], e);

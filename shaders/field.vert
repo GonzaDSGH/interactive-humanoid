@@ -12,6 +12,13 @@ attribute vec4 a_seed;   // fixed per-particle randomness
 uniform sampler2D u_fieldA; // r importance · g person · b motion · a luminance
 uniform sampler2D u_fieldB; // r edge · g contrast · b face · a silhouette
 uniform sampler2D u_fieldC; // r aura · g held · ba flow
+#ifdef INTERPOLATE
+// the previous analysis state, tweened towards the current one
+uniform sampler2D u_prevA;
+uniform sampler2D u_prevB;
+uniform sampler2D u_prevC;
+uniform float u_blend;
+#endif
 
 uniform vec2  u_res;
 uniform vec4  u_rect;   // cover rect of the camera frame, in pixels
@@ -30,9 +37,18 @@ varying float v_alpha;
 varying float v_core;
 
 void main() {
+#ifdef INTERPOLATE
+  // Analysis runs at the camera's rate, rendering at the display's. Reading
+  // the field as a tween between the last two analysis states is what keeps
+  // the body moving smoothly at 60fps instead of stepping.
+  vec4 A = mix(texture2D(u_prevA, a_cell), texture2D(u_fieldA, a_cell), u_blend);
+  vec4 B = mix(texture2D(u_prevB, a_cell), texture2D(u_fieldB, a_cell), u_blend);
+  vec4 C = mix(texture2D(u_prevC, a_cell), texture2D(u_fieldC, a_cell), u_blend);
+#else
   vec4 A = texture2D(u_fieldA, a_cell);
   vec4 B = texture2D(u_fieldB, a_cell);
   vec4 C = texture2D(u_fieldC, a_cell);
+#endif
 
   float imp      = A.r;
   float motion   = A.b;
